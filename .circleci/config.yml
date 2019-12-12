@@ -13,13 +13,13 @@ workflows:
 
 jobs:
   compile:
-    parallelism: 2
     docker:
       - image: ubuntu:18.04
     steps:
       - run:
           name: dependencies
           command: |
+            apt-get update
             apt-get install -y \
               alsa \
               apt-utils \
