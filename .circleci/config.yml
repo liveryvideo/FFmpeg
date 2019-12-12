@@ -17,7 +17,6 @@ jobs:
     docker:
       - image: ubuntu:18.04
     steps:
-      - checkout
       - run:
           name: dependencies
           command: |
@@ -51,4 +50,5 @@ jobs:
               texinfo \
               yasm \
               zlib1g-dev
+      - checkout
 
