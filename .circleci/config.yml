@@ -15,7 +15,7 @@ jobs:
   compile:
     parallelism: 2
     docker:
-      - image: gcc:8.2
+      - image: ubuntu:18.04
     steps:
       - checkout
       - run:
