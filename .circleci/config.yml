@@ -9,6 +9,7 @@ workflows:
             branches:
               only:  # only branches matching the below regex filters will run
                 - exmg-lls
+                - feature/circleci
 
 
 jobs:
@@ -17,4 +18,6 @@ jobs:
     docker:
       - image: gcc:8.2
     steps:
+      - run: apt-get update
+      - run: apt-get install -y build-essential
       - checkout
