@@ -1,0 +1,20 @@
+version: 2
+
+workflows:
+  version: 2
+  dist-compile:
+    jobs:
+      - compile
+      - link:
+          requires:
+            - compile
+
+
+jobs:
+
+  compile:
+    parallelism: 2
+    docker:
+      - image: gcc:8.2
+    steps:
+      - checkout
