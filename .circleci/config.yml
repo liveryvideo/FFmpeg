@@ -20,7 +20,7 @@ jobs:
       - image: gcc:8.2
     steps:
       - checkout
-      - run: circle-build.sh
+      - run: sh circle-build.sh
 
   shellcheck:
     docker:
