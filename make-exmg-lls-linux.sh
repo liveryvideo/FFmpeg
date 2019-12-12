@@ -3,6 +3,8 @@
 # enable-version3 enables LGPL licence version 3
 # build result written to the output directory so we can easily link against it
 ./configure \
+  --enable-gpl \
+  --enable-nonfree \
   --enable-openssl \
   --enable-version3 \
   --disable-sdl2 \
@@ -15,6 +17,8 @@
   --disable-outdev=xv \
   --enable-libpulse \
   --enable-libvmaf \
+  --enable-libx264 \
+  --enable-libsrt \
   --pkg-config-flags=--static \
   --prefix="output"
 
