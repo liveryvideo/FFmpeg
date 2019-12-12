@@ -21,3 +21,14 @@ jobs:
       - run: apt-get update
       - run: apt-get install -y build-essential
       - checkout
+
+  shellcheck:
+    docker:
+      - image: koalaman/shellcheck-alpine:stable
+    steps:
+      - checkout
+      - run:
+          name: Check Scripts
+          command: |
+            find . -type f -name '*.sh' | wc -l
+            find . -type f -name '*.sh' | xargs shellcheck --external-sources
