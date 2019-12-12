@@ -5,9 +5,10 @@ workflows:
   dist-compile:
     jobs:
       - compile
-      - link:
-          requires:
-            - compile
+        filters:
+          branches:
+            only:  # only branches matching the below regex filters will run
+              - exmg-lls
 
 
 jobs:
