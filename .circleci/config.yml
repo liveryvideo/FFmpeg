@@ -4,14 +4,12 @@ workflows:
   version: 2
   dist-compile:
     jobs:
-      - shellcheck
       - compile:
           filters:
             branches:
               only:  # only branches matching the below regex filters will run
                 - exmg-lls
                 - feature/circleci
-
 
 jobs:
   compile:
@@ -20,15 +18,37 @@ jobs:
       - image: gcc:8.2
     steps:
       - checkout
-      - run: sh circle-build.sh
-
-  shellcheck:
-    docker:
-      - image: koalaman/shellcheck-alpine:stable
-    steps:
-      - checkout
       - run:
-          name: Check Scripts
+          name: dependencies
           command: |
-            find . -type f -name '*.sh' | wc -l
-            find . -type f -name '*.sh' | xargs shellcheck --external-sources
+            apt-get install -y \
+              alsa \
+              apt-utils \
+              automake \
+              autoconf \
+              build-essential \
+              cmake \
+              dkms \
+              git-core \
+              libasound2-dev \
+              libass-dev \
+              libfreetype6-dev \
+              libgl1-mesa-glx \
+              libgl1 \
+              libpulse-dev \
+              libssl-dev \
+              libtool \
+              libva-dev \
+              libva2 \
+              libva-drm2 \
+              libva-x11-2 \
+              libxv1 \
+              libx264-152 \
+              libx264-dev \
+              nasm \
+              pkg-config \
+              pulseaudio \
+              texinfo \
+              yasm \
+              zlib1g-dev
+
