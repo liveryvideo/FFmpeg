@@ -51,4 +51,29 @@ jobs:
               yasm \
               zlib1g-dev
       - checkout
+      - run:
+          name: configure
+          command: |
+            ./configure  \
+              --enable-openssl \
+              --enable-version3 \
+              --enable-static \
+              --disable-sdl2 \
+              --disable-debug \
+              --disable-ffplay \
+              --disable-libxcb \
+              --disable-libxcb-shm \
+              --disable-indev=sndio \
+              --disable-outdev=sndio \
+              --disable-outdev=xv \
+              --enable-libx264 \
+              --enable-libpulse \
+              --enable-vaapi \
+              --enable-libfreetype \
+              --enable-fontconfig \
+              --enable-libvmaf \
+              --extra-libs="-lpthread -lm" \
+              --pkg-config-flags=--static
+      - run: make -j2
+
 
