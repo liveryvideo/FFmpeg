@@ -50,11 +50,24 @@ jobs:
               texinfo \
               yasm \
               zlib1g-dev
+      - run:
+          name: vmaf
+          command: |
+            cd /tmp
+            git clone https://github.com/Netflix/vmaf.git
+            cd vmaf/ptools
+            make
+            cd ../wrapper
+            make -j8
+            cd ..
+            sudo make install
       - checkout
       - run:
           name: configure
           command: |
             ./configure  \
+              --enable-gpl \
+              --enable-nonfree \
               --enable-openssl \
               --enable-version3 \
               --enable-static \
