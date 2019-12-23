@@ -56,8 +56,8 @@ jobs:
             cd /tmp
             git clone https://github.com/Netflix/vmaf.git
             pwd
-            ls -lha
-            cd vmaf/ptools
+            ls -lha /tmp/vmaf
+            cd /tmp/vmaf/ptools
             make
             cd ../wrapper
             make -j8
