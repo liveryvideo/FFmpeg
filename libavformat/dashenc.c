@@ -154,6 +154,7 @@ typedef struct DASHContext {
     int nr_of_streams_to_flush;
     int nr_of_streams_flushed;
     int http_retry;
+    int first_mpd_written; /* used to log some details the first time the mpd is written */
     stats *time_stats;
 } DASHContext;
 
@@ -1022,6 +1023,11 @@ static int write_manifest(AVFormatContext *s, int final)
     av_dict_free(&opts);
     if (mpd_conn_nr < 0) {
         return handle_io_open_error(s, mpd_conn_nr, temp_filename);
+    }
+
+    if (!c->first_mpd_written) {
+        c->first_mpd_written = 1;
+        av_log(s, AV_LOG_INFO, "availabilityStartTime=\"%s\"\n", c->availability_start_time);
     }
 
     pool_get_context(&out, mpd_conn_nr);
