@@ -11,13 +11,89 @@ workflows:
                 - exmg-lls
                 - feature/circleci
 
-
 jobs:
   compile:
-    parallelism: 2
     docker:
-      - image: gcc:8.2
+      - image: ubuntu:18.04
     steps:
-      - run: apt-get update
-      - run: apt-get install -y build-essential
+      - run:
+          name: dependencies
+          command: |
+            apt-get update
+            apt-get install -y \
+              alsa \
+              apt-utils \
+              automake \
+              autoconf \
+              build-essential \
+              cmake \
+              dkms \
+              git-core \
+              libasound2-dev \
+              libass-dev \
+              libfreetype6-dev \
+              libgl1-mesa-glx \
+              libgl1 \
+              libpulse-dev \
+              libssl-dev \
+              libtool \
+              libva-dev \
+              libva2 \
+              libva-drm2 \
+              libva-x11-2 \
+              libxv1 \
+              libx264-152 \
+              libx264-dev \
+              nasm \
+              pkg-config \
+              pulseaudio \
+              texinfo \
+              yasm \
+              zlib1g-dev
+      - run:
+          name: vmaf
+          command: |
+            cd /tmp
+            git clone https://github.com/Netflix/vmaf.git
+            cd vmaf
+            git checkout tags/v1.3.15
+            cd ptools
+            make
+            cd ../wrapper
+            make -j8
+            cd ..
+            sudo make install
       - checkout
+      - run:
+          name: configure
+          command: |
+            ./configure  \
+              --enable-gpl \
+              --enable-nonfree \
+              --enable-openssl \
+              --enable-version3 \
+              --enable-static \
+              --disable-sdl2 \
+              --disable-debug \
+              --disable-ffplay \
+              --disable-libxcb \
+              --disable-libxcb-shm \
+              --disable-indev=sndio \
+              --disable-outdev=sndio \
+              --disable-outdev=xv \
+              --enable-libx264 \
+              --enable-libpulse \
+              --enable-vaapi \
+              --enable-libfreetype \
+              --enable-fontconfig \
+              --enable-libvmaf \
+              --extra-libs="-lpthread -lm" \
+              --pkg-config-flags=--static
+      - run:
+          name: make
+          command: |
+            make -j2
+            mkdir /tmp/artifacts
+            cp ffmpeg_g /tmp/artifacts
+      - store_artifacts:
+          path: /tmp/artifacts
