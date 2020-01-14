@@ -4450,6 +4450,7 @@ static int mov_write_traf_tag(AVIOContext *pb, MOVMuxContext *mov,
 static int mov_write_moof_tag_internal(AVIOContext *pb, MOVMuxContext *mov,
                                        int tracks, int moof_size)
 {
+
     int64_t pos = avio_tell(pb);
     int i;
 
@@ -4534,6 +4535,8 @@ static int mov_write_sidx_tag(AVIOContext *pb,
 static int mov_write_sidx_tags(AVIOContext *pb, MOVMuxContext *mov,
                                int tracks, int ref_size)
 {
+    av_log(mov, AV_LOG_VERBOSE, "Writing SIDX tags\n");
+
     int i, round, ret;
     AVIOContext *avio_buf;
     int total_size = 0;
@@ -4609,6 +4612,19 @@ static int mov_write_prft_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks)
     return update_size(pb, pos);
 }
 
+static int mov_write_exmg_tag(AVIOContext *pb, MOVMuxContext *mov)
+{
+    av_log(mov, AV_LOG_VERBOSE, "Writing EXMG tag\n");
+
+    int64_t pos = avio_tell(pb);
+
+    avio_wb32(pb, 0);                           // Size place holder
+    ffio_wfourcc(pb, "exmg");                   // Type
+    avio_wb32(pb, mov->exmg_key_id++);          // ExMg key ID
+    // TODO add mapping of Frame-Ranges/Key-IDs inside segment
+    return update_size(pb, pos);
+}
+
 static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
                               int64_t mdat_size)
 {
@@ -4626,6 +4642,8 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
 
     if (mov->write_prft > MOV_PRFT_NONE && mov->write_prft < MOV_PRFT_NB)
         mov_write_prft_tag(pb, mov, tracks);
+
+    mov_write_exmg_tag(pb, mov);
 
     if (mov->flags & FF_MOV_FLAG_GLOBAL_SIDX ||
         !(mov->flags & FF_MOV_FLAG_SKIP_TRAILER) ||
@@ -4991,6 +5009,8 @@ static int mov_flush_fragment_interleaving(AVFormatContext *s, MOVTrack *track)
 
 static int mov_flush_fragment(AVFormatContext *s, int force)
 {
+    av_log(s, AV_LOG_VERBOSE, "Flushing fragment\n");
+
     MOVMuxContext *mov = s->priv_data;
     int i, first_track = -1;
     int64_t mdat_size = 0;
@@ -5164,6 +5184,8 @@ static int mov_flush_fragment(AVFormatContext *s, int force)
 
         if (write_moof) {
             avio_flush(s->pb);
+
+            av_log(s, AV_LOG_VERBOSE, "Writing MOOF box\n");
 
             mov_write_moof_tag(s->pb, mov, moof_tracks, mdat_size);
             mov->fragments++;
@@ -6187,6 +6209,8 @@ static int mov_init(AVFormatContext *s)
     mov->tracks = av_mallocz_array((mov->nb_streams + 1), sizeof(*mov->tracks));
     if (!mov->tracks)
         return AVERROR(ENOMEM);
+
+     mov->exmg_key_id = 0;
 
     if (mov->encryption_scheme_str != NULL && strcmp(mov->encryption_scheme_str, "none") != 0) {
         if (strcmp(mov->encryption_scheme_str, "cenc-aes-ctr") == 0) {

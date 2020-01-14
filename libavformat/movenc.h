@@ -227,6 +227,8 @@ typedef struct MOVMuxContext {
     uint8_t *encryption_kid;
     int encryption_kid_len;
 
+    uint32_t exmg_key_id;
+
     int need_rewrite_extradata;
 
     int use_stream_ids_as_track_ids;
