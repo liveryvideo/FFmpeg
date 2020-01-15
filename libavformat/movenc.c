@@ -24,6 +24,8 @@
 #include <stdint.h>
 #include <inttypes.h>
 
+#include <signal.h> // needed for EXMG MQTT client
+
 #include "movenc.h"
 #include "avformat.h"
 #include "avio_internal.h"
@@ -56,6 +58,8 @@
 #include "rtpenc.h"
 #include "mov_chan.h"
 #include "vpcc.h"
+
+#include "MQTTClient.h"
 
 static const AVOption options[] = {
     { "movflags", "MOV muxer flags", offsetof(MOVMuxContext, flags), AV_OPT_TYPE_FLAGS, {.i64 = 0}, INT_MIN, INT_MAX, AV_OPT_FLAG_ENCODING_PARAM, "movflags" },
@@ -7031,4 +7035,213 @@ AVOutputFormat ff_f4v_muxer = {
     .check_bitstream   = mov_check_bitstream,
     .priv_class        = &f4v_muxer_class,
 };
+#endif
+
+#if 1
+
+#define EXMG_MQTT_URL "ssl://mqtt.liveryvideo.com:8883"
+
+#define EXMG_MQTT_PASSWD "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyLWlkIjoidXNlcjIiLCJhdXRoLWdyb3VwcyI6InB1Ymxpc2g7c3Vic2NyaWJlIn0.BeBVt6WnpC9oNmd9-DLH7x4ROQaKUhQFOZYJBwyaV5GyYyXa3Hm-8GCppOFITp1-Djs5H5NrfThuDtDTaDr0vOZNPaSmkztW-fYWMZ7B4eUFEbnTwwoKzaZZRuQHqY_uFLyYM030VL3NMLhPdoyYnPrdHn-TnLHoZUkSh9gx0mBRJTA9fnurSgqRCM2ho4W5o_yQhB_ggIp04DgM0oZG8Qmts5nEmXLTTpEJs2wTla0aJ9a9bd2LBPF5jbXNkG8kI3BuH5-lq35EMH1UMMKBzqF4OiZ9pTc7GV9qhUDJvJOUlA3wxLWWLh4fuFQG-N90e_5Pj1xGNswIgAwzL7UehCBA03UFisY5AfNmoX0qQ_1Lbhl7xVnlMBtj4pSPCpQMHiuDkvQWvNFnmp9VCLcAQWvOXtasPl37Zd0Mwz1Nsn6ceUxBqUtCg26yA-v5Fs0nX5Z2UTCqtrLDjkNbtuMZTglkauVhZkvZp7ITC0bW_goNKSZgvRhGeh4cFkkUap059s7SUnrfWG7XMLoAsrG_nasfpNrHsHs2yZ7Hs8omYf7AkTP_vpXwNgBKfO5Y6wZyI50drTmZvVa1WXZp2YIbBSEz4rGa-lqAKVNKqMWK0g_3aUP6rQDbnenQRv7ZZ4x3W5QyYiUYD4PzkpWOSupIqgB968GTg_wrbPlGSysyR_U"
+
+#define EXMG_MQTT_TOPIC "joep/test"
+
+#define EXMG_MQTT_CLIENTID "user2"
+
+#define EXMG_MQTT_USERNAME EXMG_MQTT_CLIENTID
+
+#define EXMG_MQTT_VERSION MQTTVERSION_5
+
+static int mqtt_client_connect(MQTTClient* client)
+{
+    MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
+    MQTTClient_SSLOptions ssl_opts = MQTTClient_SSLOptions_initializer;
+
+    int rc = 0;
+
+    conn_opts.keepAliveInterval = 1;
+    conn_opts.username = EXMG_MQTT_USERNAME;
+    conn_opts.password = EXMG_MQTT_PASSWD;
+    conn_opts.MQTTVersion = EXMG_MQTT_VERSION;
+
+    if (conn_opts.MQTTVersion == MQTTVERSION_5)
+    {
+        MQTTClient_connectOptions conn_opts5 = MQTTClient_connectOptions_initializer5;
+        conn_opts = conn_opts5;
+    }
+
+    const char* url = EXMG_MQTT_URL;
+
+    if (strncmp(url, "ssl://", 6) == 0 ||
+            strncmp(url, "wss://", 6) == 0)
+    {
+
+        ssl_opts.verify = 1;
+        ssl_opts.CApath = NULL;
+        ssl_opts.keyStore = NULL;
+        ssl_opts.trustStore = NULL;
+        ssl_opts.privateKey = NULL;
+        ssl_opts.privateKeyPassword = NULL;
+        ssl_opts.enabledCipherSuites = NULL;
+
+        conn_opts.ssl = &ssl_opts;
+    }
+
+    if (conn_opts.MQTTVersion == MQTTVERSION_5)
+    {
+        MQTTProperties props = MQTTProperties_initializer;
+        MQTTProperties willProps = MQTTProperties_initializer;
+        MQTTResponse response = MQTTResponse_initializer;
+
+        conn_opts.cleanstart = 1;
+        response = MQTTClient_connect5(client, &conn_opts, &props, &willProps);
+        rc = response.reasonCode;
+    }
+    else
+    {
+        conn_opts.cleansession = 1;
+        rc = MQTTClient_connect(client, &conn_opts);
+    }
+
+    return rc;
+}
+
+static volatile int mqtt_client_running = 0;
+
+static void mqtt_client_finish_cb(int sig)
+{
+
+    mqtt_client_running = 0;
+}
+
+static int mqtt_client_run(char* message)
+{
+    MQTTClient client;
+    MQTTProperties pub_props = MQTTProperties_initializer;
+    MQTTClient_createOptions createOpts = MQTTClient_createOptions_initializer;
+    char* buffer = NULL;
+    int rc = 0;
+    char* url;
+    const char* version = NULL;
+#if !defined(WIN32)
+    struct sigaction sa;
+#endif
+
+    MQTTClient_nameValue* infos = MQTTClient_getVersionInfo();
+
+    char *topic = EXMG_MQTT_TOPIC;
+
+    if (!message) {
+        return 0;
+    }
+
+    url = EXMG_MQTT_URL;
+
+    // Q: protocol version?
+    createOpts.MQTTVersion = EXMG_MQTT_VERSION;
+
+    rc = MQTTClient_createWithOptions(&client, url,
+        EXMG_MQTT_CLIENTID, MQTTCLIENT_PERSISTENCE_NONE,
+            NULL, &createOpts);
+
+    if (rc != MQTTCLIENT_SUCCESS)
+    {
+        return 0;
+    }
+
+#if defined(WIN32)
+    signal(SIGINT, cfinish);
+    signal(SIGTERM, cfinish);
+#else
+    memset(&sa, 0, sizeof(struct sigaction));
+    sa.sa_handler = mqtt_client_finish_cb;
+    sa.sa_flags = 0;
+
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+#endif
+
+    /*
+    rc = MQTTClient_setCallbacks(client, NULL, NULL, messageArrived, NULL);
+    if (rc != MQTTCLIENT_SUCCESS)
+    {
+        return 0
+    }
+    */
+
+    if (mqtt_client_connect(client) != MQTTCLIENT_SUCCESS)
+        goto exit;
+
+    if (createOpts.MQTTVersion >= MQTTVERSION_5)
+    {
+        MQTTProperty property;
+
+        if (1 /*opts.message_expiry > 0*/)
+        {
+            property.identifier = MQTTPROPERTY_CODE_MESSAGE_EXPIRY_INTERVAL;
+            property.value.integer4 = 1000; // opts.message_expiry;
+            MQTTProperties_add(&pub_props, &property);
+        }
+        #if 0
+        if (1 /*opts.user_property.name*/)
+        {
+            property.identifier = MQTTPROPERTY_CODE_USER_PROPERTY;
+            property.value.data.data = opts.user_property.name;
+            property.value.data.len = (int)strlen(opts.user_property.name);
+            property.value.value.data = opts.user_property.value;
+            property.value.value.len = (int)strlen(opts.user_property.value);
+            MQTTProperties_add(&pub_props, &property);
+        }
+        #endif
+    }
+
+    mqtt_client_running = 1;
+    while (mqtt_client_running)
+    {
+        int data_len = 0;
+        int delim_len = 0;
+
+        if (message)
+        {
+            buffer = message;
+            data_len = (int)strlen(message);
+        }
+
+        if (createOpts.MQTTVersion >= MQTTVERSION_5)
+        {
+            MQTTResponse response = MQTTResponse_initializer;
+
+            response = MQTTClient_publish5(client, topic, data_len, buffer, 0, 0, &pub_props, NULL);
+            rc = response.reasonCode;
+        } else {
+            rc = MQTTClient_publish(client, topic, data_len, buffer, 0, 0, NULL);
+        }
+
+        if (rc != 0)
+        {
+            mqtt_client_connect(client);
+            if (createOpts.MQTTVersion == MQTTVERSION_5)
+            {
+                MQTTResponse response = MQTTResponse_initializer;
+
+                response = MQTTClient_publish5(client, topic, data_len, buffer, 0, 0, &pub_props, NULL);
+                rc = response.reasonCode;
+            }
+            else
+                rc = MQTTClient_publish(client, topic, data_len, buffer, 0, 0, NULL);
+        }
+
+    }
+
+exit:
+
+    if (createOpts.MQTTVersion == MQTTVERSION_5)
+        rc = MQTTClient_disconnect5(client, 0, MQTTREASONCODE_SUCCESS, NULL);
+    else
+        rc = MQTTClient_disconnect(client, 0);
+
+     MQTTClient_destroy(&client);
+
+    return EXIT_SUCCESS;
+}
+
 #endif
