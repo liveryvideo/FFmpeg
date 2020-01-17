@@ -117,6 +117,8 @@ static const AVClass flavor ## _muxer_class = {\
     .version    = LIBAVUTIL_VERSION_INT,\
 };
 
+static int mqtt_client_send(const char* message);
+
 static int get_moov_size(AVFormatContext *s);
 
 static int utf8len(const uint8_t *b)
@@ -4406,6 +4408,16 @@ static int mov_write_tfdt_tag(AVIOContext *pb, MOVTrack *track)
     avio_w8(pb, 1); /* version */
     avio_wb24(pb, 0);
     avio_wb64(pb, track->frag_start);
+
+    #if 1
+        char mqtt_message_buffer[4096];
+        snprintf(mqtt_message_buffer, sizeof(mqtt_message_buffer),
+            "{track_id: %d, first_pts: %ld}",
+            track->track_id,
+            track->frag_start);
+        mqtt_client_send(mqtt_message_buffer);
+    #endif
+
     return update_size(pb, pos);
 }
 
@@ -4438,6 +4450,7 @@ static int mov_write_traf_tag(AVIOContext *pb, MOVMuxContext *mov,
                 MOVFragmentInfo *info = &track->frag_info[track->nb_frag_info - 1];
                 if (!info->tfrf_offset)
                     info->tfrf_offset = avio_tell(pb);
+
             }
             avio_wb32(pb, 8 + size);
             ffio_wfourcc(pb, "free");
@@ -4627,8 +4640,6 @@ static int mov_write_exmg_tag(AVIOContext *pb, MOVMuxContext *mov)
     return update_size(pb, pos);
 }
 
-static int mqtt_client_send(char* message);
-
 static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
                               int64_t mdat_size)
 {
@@ -4648,8 +4659,6 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
         mov_write_prft_tag(pb, mov, tracks);
 
     mov_write_exmg_tag(pb, mov);
-
-    mqtt_client_send("hi!");
 
     if (mov->flags & FF_MOV_FLAG_GLOBAL_SIDX ||
         !(mov->flags & FF_MOV_FLAG_SKIP_TRAILER) ||
@@ -7087,7 +7096,7 @@ static int mqtt_client_connect(MQTTClient* client)
     return rc;
 }
 
-static int mqtt_client_send(char* message)
+static int mqtt_client_send(const char* message)
 {
 
     av_log(NULL, AV_LOG_VERBOSE, "mqtt_client_send: %s\n", message);
@@ -7142,7 +7151,7 @@ static int mqtt_client_send(char* message)
     }
 
     rc = MQTTClient_publish(client, topic, data_len, buffer, 0, 0, NULL);
-    
+
     if (rc != 0)
     {
         mqtt_client_connect(client);
