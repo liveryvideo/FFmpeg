@@ -24,8 +24,6 @@
 #include <stdint.h>
 #include <inttypes.h>
 
-#include <signal.h> // needed for EXMG MQTT client
-
 #include "movenc.h"
 #include "avformat.h"
 #include "avio_internal.h"
@@ -4629,6 +4627,8 @@ static int mov_write_exmg_tag(AVIOContext *pb, MOVMuxContext *mov)
     return update_size(pb, pos);
 }
 
+static int mqtt_client_send(char* message);
+
 static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
                               int64_t mdat_size)
 {
@@ -4648,6 +4648,8 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
         mov_write_prft_tag(pb, mov, tracks);
 
     mov_write_exmg_tag(pb, mov);
+
+    mqtt_client_send("hi!");
 
     if (mov->flags & FF_MOV_FLAG_GLOBAL_SIDX ||
         !(mov->flags & FF_MOV_FLAG_SKIP_TRAILER) ||
@@ -7049,7 +7051,7 @@ AVOutputFormat ff_f4v_muxer = {
 
 #define EXMG_MQTT_USERNAME EXMG_MQTT_CLIENTID
 
-#define EXMG_MQTT_VERSION MQTTVERSION_5
+#define EXMG_MQTT_VERSION MQTTVERSION_3_1_1
 
 static int mqtt_client_connect(MQTTClient* client)
 {
@@ -7057,19 +7059,12 @@ static int mqtt_client_connect(MQTTClient* client)
     MQTTClient_SSLOptions ssl_opts = MQTTClient_SSLOptions_initializer;
 
     int rc = 0;
+    const char* url = EXMG_MQTT_URL;
 
     conn_opts.keepAliveInterval = 1;
     conn_opts.username = EXMG_MQTT_USERNAME;
     conn_opts.password = EXMG_MQTT_PASSWD;
     conn_opts.MQTTVersion = EXMG_MQTT_VERSION;
-
-    if (conn_opts.MQTTVersion == MQTTVERSION_5)
-    {
-        MQTTClient_connectOptions conn_opts5 = MQTTClient_connectOptions_initializer5;
-        conn_opts = conn_opts5;
-    }
-
-    const char* url = EXMG_MQTT_URL;
 
     if (strncmp(url, "ssl://", 6) == 0 ||
             strncmp(url, "wss://", 6) == 0)
@@ -7086,35 +7081,17 @@ static int mqtt_client_connect(MQTTClient* client)
         conn_opts.ssl = &ssl_opts;
     }
 
-    if (conn_opts.MQTTVersion == MQTTVERSION_5)
-    {
-        MQTTProperties props = MQTTProperties_initializer;
-        MQTTProperties willProps = MQTTProperties_initializer;
-        MQTTResponse response = MQTTResponse_initializer;
-
-        conn_opts.cleanstart = 1;
-        response = MQTTClient_connect5(client, &conn_opts, &props, &willProps);
-        rc = response.reasonCode;
-    }
-    else
-    {
-        conn_opts.cleansession = 1;
-        rc = MQTTClient_connect(client, &conn_opts);
-    }
+    conn_opts.cleansession = 1;
+    rc = MQTTClient_connect(client, &conn_opts);
 
     return rc;
 }
 
-static volatile int mqtt_client_running = 0;
-
-static void mqtt_client_finish_cb(int sig)
+static int mqtt_client_send(char* message)
 {
 
-    mqtt_client_running = 0;
-}
+    av_log(NULL, AV_LOG_VERBOSE, "mqtt_client_send: %s\n", message);
 
-static int mqtt_client_run(char* message)
-{
     MQTTClient client;
     MQTTProperties pub_props = MQTTProperties_initializer;
     MQTTClient_createOptions createOpts = MQTTClient_createOptions_initializer;
@@ -7122,9 +7099,6 @@ static int mqtt_client_run(char* message)
     int rc = 0;
     char* url;
     const char* version = NULL;
-#if !defined(WIN32)
-    struct sigaction sa;
-#endif
 
     MQTTClient_nameValue* infos = MQTTClient_getVersionInfo();
 
@@ -7136,7 +7110,6 @@ static int mqtt_client_run(char* message)
 
     url = EXMG_MQTT_URL;
 
-    // Q: protocol version?
     createOpts.MQTTVersion = EXMG_MQTT_VERSION;
 
     rc = MQTTClient_createWithOptions(&client, url,
@@ -7147,18 +7120,6 @@ static int mqtt_client_run(char* message)
     {
         return 0;
     }
-
-#if defined(WIN32)
-    signal(SIGINT, cfinish);
-    signal(SIGTERM, cfinish);
-#else
-    memset(&sa, 0, sizeof(struct sigaction));
-    sa.sa_handler = mqtt_client_finish_cb;
-    sa.sa_flags = 0;
-
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
-#endif
 
     /*
     rc = MQTTClient_setCallbacks(client, NULL, NULL, messageArrived, NULL);
@@ -7171,73 +7132,27 @@ static int mqtt_client_run(char* message)
     if (mqtt_client_connect(client) != MQTTCLIENT_SUCCESS)
         goto exit;
 
-    if (createOpts.MQTTVersion >= MQTTVERSION_5)
-    {
-        MQTTProperty property;
+    int data_len = 0;
+    int delim_len = 0;
 
-        if (1 /*opts.message_expiry > 0*/)
-        {
-            property.identifier = MQTTPROPERTY_CODE_MESSAGE_EXPIRY_INTERVAL;
-            property.value.integer4 = 1000; // opts.message_expiry;
-            MQTTProperties_add(&pub_props, &property);
-        }
-        #if 0
-        if (1 /*opts.user_property.name*/)
-        {
-            property.identifier = MQTTPROPERTY_CODE_USER_PROPERTY;
-            property.value.data.data = opts.user_property.name;
-            property.value.data.len = (int)strlen(opts.user_property.name);
-            property.value.value.data = opts.user_property.value;
-            property.value.value.len = (int)strlen(opts.user_property.value);
-            MQTTProperties_add(&pub_props, &property);
-        }
-        #endif
+    if (message)
+    {
+        buffer = message;
+        data_len = (int)strlen(message);
     }
 
-    mqtt_client_running = 1;
-    while (mqtt_client_running)
+    rc = MQTTClient_publish(client, topic, data_len, buffer, 0, 0, NULL);
+    
+    if (rc != 0)
     {
-        int data_len = 0;
-        int delim_len = 0;
+        mqtt_client_connect(client);
 
-        if (message)
-        {
-            buffer = message;
-            data_len = (int)strlen(message);
-        }
-
-        if (createOpts.MQTTVersion >= MQTTVERSION_5)
-        {
-            MQTTResponse response = MQTTResponse_initializer;
-
-            response = MQTTClient_publish5(client, topic, data_len, buffer, 0, 0, &pub_props, NULL);
-            rc = response.reasonCode;
-        } else {
-            rc = MQTTClient_publish(client, topic, data_len, buffer, 0, 0, NULL);
-        }
-
-        if (rc != 0)
-        {
-            mqtt_client_connect(client);
-            if (createOpts.MQTTVersion == MQTTVERSION_5)
-            {
-                MQTTResponse response = MQTTResponse_initializer;
-
-                response = MQTTClient_publish5(client, topic, data_len, buffer, 0, 0, &pub_props, NULL);
-                rc = response.reasonCode;
-            }
-            else
-                rc = MQTTClient_publish(client, topic, data_len, buffer, 0, 0, NULL);
-        }
-
+        rc = MQTTClient_publish(client, topic, data_len, buffer, 0, 0, NULL);
     }
 
 exit:
 
-    if (createOpts.MQTTVersion == MQTTVERSION_5)
-        rc = MQTTClient_disconnect5(client, 0, MQTTREASONCODE_SUCCESS, NULL);
-    else
-        rc = MQTTClient_disconnect(client, 0);
+    rc = MQTTClient_disconnect(client, 0);
 
      MQTTClient_destroy(&client);
 
