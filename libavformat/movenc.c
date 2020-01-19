@@ -4664,12 +4664,13 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
     for (int i = 0; i < mov->nb_streams; i++) {
         MOVTrack* track = &mov->tracks[i];
         char mqtt_message_buffer[4096];
+
         snprintf(mqtt_message_buffer, sizeof(mqtt_message_buffer),
-            "{exmg_track_fragment_info: {track_id: %d, first_pts: %ld, codec_id: %d, codec_type: %d, bitrate: %ld}, exmg_key_map: {%d: %d}}",
+            "{exmg_track_fragment_info: {track_id: %d, first_pts: %ld, codec_id: %d, codec_type: %s, bitrate: %ld}, exmg_key_map: {%d: %d}}",
             track->track_id,
             track->frag_start,
             track->par->codec_id, // TODO: replace by codec_tag (4CC)
-            track->par->codec_type,
+            av_get_media_type_string(track->par->codec_type),
             track->par->bit_rate,
             mov->exmg_key_id,
             0
