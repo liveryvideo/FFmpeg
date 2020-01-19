@@ -4652,7 +4652,7 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
 
     #if 1
 
-    av_log(mov, AV_LOG_VERBOSE, "Writing MOOF with %d tracks\n", tracks);
+    av_log(mov, AV_LOG_VERBOSE, "Writing MOOF with %d tracks, and %ld bytes of mdat\n", tracks, mdat_size);
 
     /**
      *  EXMG MQTT message sending. 
@@ -5045,7 +5045,7 @@ static int mov_flush_fragment_interleaving(AVFormatContext *s, MOVTrack *track)
 
 static int mov_flush_fragment(AVFormatContext *s, int force)
 {
-    av_log(s, AV_LOG_VERBOSE, "Flushing fragment\n");
+    av_log(s, AV_LOG_VERBOSE, "Flushing media fragment\n");
 
     MOVMuxContext *mov = s->priv_data;
     int i, first_track = -1;
