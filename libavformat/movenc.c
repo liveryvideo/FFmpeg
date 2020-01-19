@@ -4409,15 +4409,6 @@ static int mov_write_tfdt_tag(AVIOContext *pb, MOVTrack *track)
     avio_wb24(pb, 0);
     avio_wb64(pb, track->frag_start);
 
-    #if 1
-        char mqtt_message_buffer[4096];
-        snprintf(mqtt_message_buffer, sizeof(mqtt_message_buffer),
-            "{track_id: %d, first_pts: %ld}",
-            track->track_id,
-            track->frag_start);
-        mqtt_client_send(mqtt_message_buffer);
-    #endif
-
     return update_size(pb, pos);
 }
 
@@ -4657,6 +4648,36 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
 
     if (mov->write_prft > MOV_PRFT_NONE && mov->write_prft < MOV_PRFT_NB)
         mov_write_prft_tag(pb, mov, tracks);
+
+
+    #if 1
+
+    av_log(mov, AV_LOG_VERBOSE, "Writing MOOF with %d tracks\n", tracks);
+
+    /**
+     *  EXMG MQTT message sending. 
+     *  On a longer term, all the info in here should be 
+     *  createable from the mp4-fragment/exmg tag data 
+     *  and therefore read from the DASH encoding output,
+     *  and thus this part could be decoupled from actual FFmpeg codebase. 
+     * */
+    for (int i = 0; i < mov->nb_streams; i++) {
+        MOVTrack* track = &mov->tracks[i];
+        char mqtt_message_buffer[4096];
+        snprintf(mqtt_message_buffer, sizeof(mqtt_message_buffer),
+            "{exmg_track_fragment_info: {track_id: %d, first_pts: %ld, codec_id: %d, codec_type: %d, bitrate: %ld}, exmg_key_map: {%d: %d}}",
+            track->track_id,
+            track->frag_start,
+            track->par->codec_id, // TODO: replace by codec_tag (4CC)
+            track->par->codec_type,
+            track->par->bit_rate,
+            mov->exmg_key_id,
+            0
+        );
+        mqtt_client_send(mqtt_message_buffer);
+
+    }
+    #endif
 
     mov_write_exmg_tag(pb, mov);
 
