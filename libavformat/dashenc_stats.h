@@ -6,9 +6,9 @@
 
 typedef struct stats {
     int64_t lastLog;
-    int64_t maxTime;
-    int64_t minTime;
-    int64_t totalTime;
+    int64_t maxValue;
+    int64_t minValue;
+    int64_t totalValue;
     int64_t nrOfSamples;
     int logInterval;
     const char *name;

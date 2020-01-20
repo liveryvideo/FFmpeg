@@ -7,7 +7,7 @@
 
 void print_time_stats(stats *stats, int64_t value)
 {
-    int64_t avgTime;
+    int64_t avgValue;
     int64_t curr_time = av_gettime_relative();
 
     if (stats == NULL) {
@@ -16,31 +16,30 @@ void print_time_stats(stats *stats, int64_t value)
 
     pthread_mutex_lock(&stats->stats_lock);
     stats->nrOfSamples++;
-    stats->totalTime += value;
-    if (stats->maxTime < value)
-        stats->maxTime = value;
+    stats->totalValue += value;
+    if (stats->maxValue < value)
+        stats->maxValue = value;
 
-    if (stats->minTime > value || stats->minTime == 0)
-        stats->minTime = value;
+    if (stats->minValue > value || stats->minValue == 0)
+        stats->minValue = value;
 
     if (stats->lastLog == 0)
         stats->lastLog = curr_time;
 
-    if (curr_time - stats->lastLog > stats->logInterval)
-    {
+    if (curr_time - stats->lastLog > stats->logInterval) {
         stats->lastLog = curr_time;
-        avgTime = stats->totalTime / stats->nrOfSamples;
+        avgValue = stats->totalValue / stats->nrOfSamples;
 
         av_log(NULL, AV_LOG_INFO, "%s min: %"PRId64", max: %"PRId64", avg: %"PRId64", time: %"PRId64"\n",
             stats->name,
-            stats->minTime,
-            stats->maxTime,
-            avgTime,
+            stats->minValue,
+            stats->maxValue,
+            avgValue,
             curr_time);
 
-        stats->minTime = 0;
-        stats->maxTime = 0;
-        stats->totalTime = 0;
+        stats->minValue = 0;
+        stats->maxValue = 0;
+        stats->totalValue = 0;
         stats->nrOfSamples = 0;
     }
     pthread_mutex_unlock(&stats->stats_lock);
