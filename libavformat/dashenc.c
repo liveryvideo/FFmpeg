@@ -1294,7 +1294,7 @@ static int dash_init(AVFormatContext *s)
                 return AVERROR(EINVAL);
         }
 
-        snprintf(bitrate_str, 100, "bitrate_stats: rep_%d_bitrate_%d, bytes", os->bit_rate, i);
+        snprintf(bitrate_str, 100, "bitrate_stats: rep_%d_bitrate_%d, bytes", i, os->bit_rate);
         os->bitrate_stats = init_time_stats(bitrate_str, 1 * 1000000);
         os->conn_nr = -1;
 
