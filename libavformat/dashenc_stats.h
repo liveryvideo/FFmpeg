@@ -11,11 +11,12 @@ typedef struct stats {
     int64_t totalValue;
     int64_t nrOfSamples;
     int logInterval;
-    const char *name;
+    char name[100];
     pthread_mutex_t stats_lock;
 } stats;
 
 void print_time_stats(stats *stats, int64_t value);
+void print_total_stats(stats *stats, int64_t value);
 stats *init_time_stats(const char *name, int logInterval);
 void free_time_stats(stats *stats);
 

@@ -107,6 +107,7 @@ typedef struct OutputStream {
     int total_pkt_size;
     int muxer_overhead;
 
+    stats *bitrate_stats; /* initialized in dash_init() */
     int conn_nr; /* initialized to -1 in dash_init() */
 } OutputStream;
 
@@ -1282,8 +1283,8 @@ static int dash_init(AVFormatContext *s)
         AVStream *st;
         AVDictionary *opts = NULL;
         char filename[1024];
+        char bitrate_str[100];
 
-        os->conn_nr = -1;
         os->bit_rate = s->streams[i]->codecpar->bit_rate;
         if (!os->bit_rate) {
             int level = s->strict_std_compliance >= FF_COMPLIANCE_STRICT ?
@@ -1292,6 +1293,10 @@ static int dash_init(AVFormatContext *s)
             if (s->strict_std_compliance >= FF_COMPLIANCE_STRICT)
                 return AVERROR(EINVAL);
         }
+
+        snprintf(bitrate_str, 100, "bitrate_stats: rep_%d_bitrate_%d, bytes", os->bit_rate, i);
+        os->bitrate_stats = init_time_stats(bitrate_str, 1 * 1000000);
+        os->conn_nr = -1;
 
         // copy AdaptationSet language and role from stream metadata
         dict_copy_entry(&as->metadata, s->streams[i]->metadata, "language");
@@ -1782,7 +1787,7 @@ static int dash_flush(AVFormatContext *s, int final, int stream)
  * Print statistics to the log.
  * LLS-79
  */
-static void print_stats(DASHContext *c, AVPacket *pkt)
+static void print_stats(DASHContext *c, OutputStream *os, AVPacket *pkt)
 {
     int size;
     const uint8_t *side_data;
@@ -1810,6 +1815,8 @@ static void print_stats(DASHContext *c, AVPacket *pkt)
 
         av_dict_free(&dict);
     }
+
+    print_total_stats(os->bitrate_stats, pkt->size);
 }
 
 static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
@@ -1961,7 +1968,7 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
         int len = 0;
         uint8_t *buf = NULL;
 
-        print_stats(c, pkt);
+        print_stats(c, os, pkt);
 
         if (!os->written_len)
             write_styp(os->ctx->pb);
