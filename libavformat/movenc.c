@@ -4709,7 +4709,7 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
 
         av_log(mov, AV_LOG_VERBOSE, "Next pop'able message media time: %f\n", next_popable_message_media_time);
 
-        if (time_diff > EXMG_MESSAGE_SEND_DELAY) {
+        if (time_diff >= EXMG_MESSAGE_SEND_DELAY) {
             av_log(mov, AV_LOG_VERBOSE, "EXMG MQTT message queue pop, media-time difference is: %f secs\n", time_diff);
             mqtt_client_send(mqtt_send_message_buffer);
             mov->exmg_messages_queue_pop_idx++;
