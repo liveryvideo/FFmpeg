@@ -4626,10 +4626,13 @@ static int mov_write_exmg_tag(AVIOContext *pb, MOVMuxContext *mov)
 
     avio_wb32(pb, 0);                           // Size place holder
     ffio_wfourcc(pb, "exmg");                   // Type
-    avio_wb32(pb, mov->exmg_key_id++);          // ExMg key ID
+    avio_wb32(pb, mov->exmg_key_id_counter++);          // ExMg key ID
     // TODO add mapping of Frame-Ranges/Key-IDs inside segment
     return update_size(pb, pos);
 }
+
+#define EXMG_MESSAGE_SEND_DELAY 10.0f
+#define EXMG_MESSAGE_BUFFER_SIZE 4096
 
 static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
                               int64_t mdat_size)
@@ -4663,19 +4666,50 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
      * */
     for (int i = 0; i < mov->nb_streams; i++) {
         MOVTrack* track = &mov->tracks[i];
-        char mqtt_message_buffer[4096];
+        char *mqtt_message_buffer = malloc(EXMG_MESSAGE_BUFFER_SIZE * sizeof(char)); // FIXME: free this somewhere
 
-        snprintf(mqtt_message_buffer, sizeof(mqtt_message_buffer),
-            "{exmg_track_fragment_info: {track_id: %d, first_pts: %ld, codec_id: %d, codec_type: %s, bitrate: %ld}, exmg_key_map: {%d: %d}}",
+        snprintf(mqtt_message_buffer, EXMG_MESSAGE_BUFFER_SIZE,
+            "{exmg_track_fragment_info: {track_id: %d, media_time_in_seconds: %f, first_pts: %ld, timescale: %u, codec_id: %d, codec_type: '%s', bitrate: %ld}, exmg_key_map: {%d: %d}}",
             track->track_id,
+            (float) (track->frag_start / track->timescale),
             track->frag_start,
+            track->timescale,
             track->par->codec_id, // TODO: replace by codec_tag (4CC)
             av_get_media_type_string(track->par->codec_type),
             track->par->bit_rate,
-            mov->exmg_key_id,
+            mov->exmg_key_id_counter,
             0
         );
-        mqtt_client_send(mqtt_message_buffer);
+
+        // push the message for this fragment on the queue
+        mov->exmg_messages_queue_media_time[mov->exmg_messages_queue_push_idx] = track->frag_start;
+        mov->exmg_messages_queue[mov->exmg_messages_queue_push_idx] = mqtt_message_buffer;
+        mov->exmg_messages_queue_push_idx++;
+        // allow write over queue in circular way
+        if (mov->exmg_messages_queue_push_idx >= EXMG_MESSAGE_QUEUE_SIZE) {
+            mov->exmg_messages_queue_push_idx = 0;
+        }
+        // queue full?
+        if (mov->exmg_messages_queue_push_idx == mov->exmg_messages_queue_pop_idx) {
+            av_log(mov, AV_LOG_ERROR, "EXMG MQTT message queue full. The delay set is probably too high. Exiting process now.");
+            exit(0);
+        }
+
+        // pop message from queue with respect to delay set
+        int32_t message_q_pop_index = mov->exmg_messages_queue_pop_idx + 1;
+        char* mqtt_send_message_buffer = mov->exmg_messages_queue[message_q_pop_index];
+        int64_t mqtt_send_message_media_time = mov->exmg_messages_queue_media_time[message_q_pop_index];
+
+        float current_fragment_media_time = track->frag_start / track->timescale;
+        float next_popable_message_media_time = mqtt_send_message_media_time / track->timescale;
+        float time_diff = current_fragment_media_time - next_popable_message_media_time;
+        if (time_diff > EXMG_MESSAGE_SEND_DELAY) {
+            av_log(mov, AV_LOG_VERBOSE, "EXMG MQTT message queue pop, media-time difference is: %f secs\n", time_diff);
+            mqtt_client_send(mqtt_send_message_buffer);
+            mov->exmg_messages_queue_pop_idx++;
+        } else {
+            av_log(mov, AV_LOG_VERBOSE, "EXMG MQTT message queue not pop'd, media-time difference is: %f secs\n", time_diff);
+        }
 
     }
     #endif
@@ -6247,7 +6281,9 @@ static int mov_init(AVFormatContext *s)
     if (!mov->tracks)
         return AVERROR(ENOMEM);
 
-     mov->exmg_key_id = 0;
+    mov->exmg_key_id_counter = 0;
+    mov->exmg_messages_queue_push_idx = 0;
+    mov->exmg_messages_queue_pop_idx = -1;
 
     if (mov->encryption_scheme_str != NULL && strcmp(mov->encryption_scheme_str, "none") != 0) {
         if (strcmp(mov->encryption_scheme_str, "cenc-aes-ctr") == 0) {

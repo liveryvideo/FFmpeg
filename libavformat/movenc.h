@@ -177,6 +177,8 @@ typedef enum {
     MOV_PRFT_NB
 } MOVPrftBox;
 
+#define EXMG_MESSAGE_QUEUE_SIZE 256
+
 typedef struct MOVMuxContext {
     const AVClass *av_class;
     int     mode;
@@ -227,7 +229,11 @@ typedef struct MOVMuxContext {
     uint8_t *encryption_kid;
     int encryption_kid_len;
 
-    uint32_t exmg_key_id;
+    uint32_t exmg_key_id_counter;
+    char *exmg_messages_queue[EXMG_MESSAGE_QUEUE_SIZE]; // can't be more than MAX_INT32
+    int64_t exmg_messages_queue_media_time[EXMG_MESSAGE_QUEUE_SIZE];
+    int32_t exmg_messages_queue_push_idx;
+    int32_t exmg_messages_queue_pop_idx;
 
     int need_rewrite_extradata;
 
