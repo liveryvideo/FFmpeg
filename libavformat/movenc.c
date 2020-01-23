@@ -4668,10 +4668,12 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
         MOVTrack* track = &mov->tracks[i];
         char *mqtt_message_buffer = malloc(EXMG_MESSAGE_BUFFER_SIZE * sizeof(char)); // FIXME: free this somewhere
 
+        float media_time_secs = (float) (track->frag_start / track->timescale);
+
         snprintf(mqtt_message_buffer, EXMG_MESSAGE_BUFFER_SIZE,
             "{exmg_track_fragment_info: {track_id: %d, media_time_in_seconds: %f, first_pts: %ld, timescale: %u, codec_id: %d, codec_type: '%s', bitrate: %ld}, exmg_key_map: {%d: %d}}",
             track->track_id,
-            (float) (track->frag_start / track->timescale),
+            media_time_secs,
             track->frag_start,
             track->timescale,
             track->par->codec_id, // TODO: replace by codec_tag (4CC)
@@ -4695,14 +4697,18 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
             exit(0);
         }
 
+        av_log(mov, AV_LOG_VERBOSE, "Pushed message on queue with timestamp: %f\n", media_time_secs);
+
         // pop message from queue with respect to delay set
         int32_t message_q_pop_index = mov->exmg_messages_queue_pop_idx + 1;
         char* mqtt_send_message_buffer = mov->exmg_messages_queue[message_q_pop_index];
         int64_t mqtt_send_message_media_time = mov->exmg_messages_queue_media_time[message_q_pop_index];
 
-        float current_fragment_media_time = track->frag_start / track->timescale;
         float next_popable_message_media_time = mqtt_send_message_media_time / track->timescale;
-        float time_diff = current_fragment_media_time - next_popable_message_media_time;
+        float time_diff = media_time_secs - next_popable_message_media_time;
+
+        av_log(mov, AV_LOG_VERBOSE, "Next pop'able message media time: %f\n", next_popable_message_media_time);
+
         if (time_diff > EXMG_MESSAGE_SEND_DELAY) {
             av_log(mov, AV_LOG_VERBOSE, "EXMG MQTT message queue pop, media-time difference is: %f secs\n", time_diff);
             mqtt_client_send(mqtt_send_message_buffer);
