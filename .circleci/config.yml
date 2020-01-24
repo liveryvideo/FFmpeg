@@ -100,6 +100,7 @@ jobs:
               --enable-libfreetype \
               --enable-fontconfig \
               --enable-libvmaf \
+              --enable-libsvthevc \
               --extra-libs="-lpthread -lm" \
               --pkg-config-flags=--static
       - run:
