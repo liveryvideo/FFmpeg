@@ -4660,11 +4660,11 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
         av_log(mov, AV_LOG_VERBOSE, "Writing DASH MOOF with %d tracks, and %ld bytes of mdat\n", tracks, mdat_size);
 
         /**
-         *  EXMG MQTT message sending. 
-         *  On a longer term, all the info in here should be 
-         *  createable from the mp4-fragment/exmg tag data 
+         *  EXMG MQTT message sending.
+         *  On a longer term, all the info in here should be
+         *  createable from the mp4-fragment/exmg tag data
          *  and therefore read from the DASH encoding output,
-         *  and thus this part could be decoupled from actual FFmpeg codebase. 
+         *  and thus this part could be decoupled from actual FFmpeg codebase.
          * */
         for (int i = 0; i < mov->nb_streams; i++) {
             MOVTrack* track = &mov->tracks[i];
