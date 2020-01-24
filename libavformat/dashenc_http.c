@@ -315,7 +315,7 @@ static void *thr_io_close(connection *conn) {
         abort_if_needed(conn->must_succeed);
         //must check if this is NULL or it causes crash on segmentation fault due to NULL pointer
         //check why conn->s (AVFormatContext) becomes NULL
-        if (conn->s != NULL) { 
+        if (conn->s != NULL) {
             ff_format_io_close(conn->s, &conn->out);
         }
         pthread_mutex_lock(&connections_mutex);
@@ -547,7 +547,7 @@ void pool_io_close(AVFormatContext *s, char *filename, int conn_nr) {
     connection *conn;
 
     if (conn_nr < 0) {
-        av_log(s, AV_LOG_WARNING, "Invalid conn_nr (pool_io_close) for filename: %s\n", filename);
+        av_log(s, AV_LOG_WARNING, "Invalid conn_nr in pool_io_close for filename: %s, conn_nr: %d\n", filename, conn_nr);
         return;
     }
 
@@ -555,7 +555,7 @@ void pool_io_close(AVFormatContext *s, char *filename, int conn_nr) {
     av_log(NULL, AV_LOG_DEBUG, "pool_io_close conn_nr: %d, nr_of_chunks: %d\n", conn_nr, conn->nr_of_chunks);
 
     if (!conn->opened && !conn->opened_error) {
-        av_log(s, AV_LOG_INFO, "Skip closing HTTP request because connection is not opened. Filename: %s\n", filename);
+        av_log(s, AV_LOG_INFO, "Skip closing HTTP request because connection is not opened. conn_nr: %d, filename: %s\n", conn_nr, filename);
         abort_if_needed(conn->must_succeed);
         return;
     }
@@ -571,7 +571,7 @@ void pool_free(AVFormatContext *s, int conn_nr) {
     connection *conn;
 
     if (conn_nr < 0) {
-        av_log(s, AV_LOG_WARNING, "Invalid conn_nr (pool_free)\n");
+        av_log(s, AV_LOG_WARNING, "Invalid conn_nr in pool_free. conn_nr: %d\n", conn_nr);
         return;
     }
 
@@ -599,14 +599,14 @@ void pool_write_flush(const unsigned char *buf, int size, int conn_nr) {
     chunk *chunk;
 
     if (conn_nr < 0) {
-        av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr (pool_write_flush): %d\n", conn_nr);
+        av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr in pool_write_flush. conn_nr: %d\n", conn_nr);
         return;
     }
 
     conn = get_conn(conn_nr);
 
     if (!conn->opened && !conn->opened_error) {
-        av_log(NULL, AV_LOG_WARNING, "connection closed (pool_write_flush). conn_nr: %d, url: %s\n", conn_nr, conn->url);
+        av_log(NULL, AV_LOG_WARNING, "connection closed in pool_write_flush. conn_nr: %d, url: %s\n", conn_nr, conn->url);
         return;
     }
 
@@ -616,7 +616,7 @@ void pool_write_flush(const unsigned char *buf, int size, int conn_nr) {
     chunk->nr = conn->nr_of_chunks;
     chunk->buf = malloc(size);
     if (chunk->buf == NULL) {
-        av_log(NULL, AV_LOG_WARNING, "Could not malloc (pool_write_flush)\n");
+        av_log(NULL, AV_LOG_WARNING, "Could not malloc in pool_write_flush.\n");
     }
     memcpy(chunk->buf, buf, size);
 
@@ -637,7 +637,7 @@ int pool_avio_write(const unsigned char *buf, int size, int conn_nr) {
     connection *conn;
 
     if (conn_nr < 0) {
-        av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr (pool_avio_write)\n");
+        av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr in pool_avio_write. conn_nr: %d\n", conn_nr);
         return -1;
     }
     conn = get_conn(conn_nr);
@@ -656,7 +656,7 @@ void pool_get_context(AVIOContext **out, int conn_nr) {
     connection *conn;
 
     if (conn_nr < 0) {
-        av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr (pool_get_context)\n");
+        av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr in pool_get_context. conn_nr: %d\n", conn_nr);
         return;
     }
     conn = get_conn(conn_nr);
