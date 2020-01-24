@@ -4699,6 +4699,8 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
 
         av_log(mov, AV_LOG_VERBOSE, "Pushed message on queue with timestamp: %f\n", media_time_secs);
 
+        // Q: iterate over whole q until pop_index == push_index - 1 and while time_diff is > delay ?
+
         // pop message from queue with respect to delay set
         int32_t message_q_pop_index = mov->exmg_messages_queue_pop_idx + 1;
         char* mqtt_send_message_buffer = mov->exmg_messages_queue[message_q_pop_index];
@@ -4710,9 +4712,9 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
         av_log(mov, AV_LOG_VERBOSE, "Next pop'able message media time: %f\n", next_popable_message_media_time);
 
         if (time_diff >= EXMG_MESSAGE_SEND_DELAY) {
+            mov->exmg_messages_queue_pop_idx++;
             av_log(mov, AV_LOG_VERBOSE, "EXMG MQTT message queue pop, media-time difference is: %f secs\n", time_diff);
             mqtt_client_send(mqtt_send_message_buffer);
-            mov->exmg_messages_queue_pop_idx++;
         } else {
             av_log(mov, AV_LOG_VERBOSE, "EXMG MQTT message queue not pop'd, media-time difference is: %f secs\n", time_diff);
         }
