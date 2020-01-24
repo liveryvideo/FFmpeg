@@ -73,7 +73,10 @@ jobs:
       - checkout
       - run:
           name: patch-SVT
-          command: git am /tmp/SVT-HEVC/ffmpeg_plugin/0001*.patch
+          command: |
+            git config --global user.email "circleci@exmachina.nl"
+            git config --global user.name "CircleCI"
+            git am /tmp/SVT-HEVC/ffmpeg_plugin/0001*.patch
       - run:
           name: configure
           command: |
