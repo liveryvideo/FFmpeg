@@ -69,7 +69,7 @@ jobs:
             cd /tmp
             git clone https://github.com/OpenVisualCloud/SVT-HEVC.git
             cd SVT-HEVC/Build/linux
-            ./build release static install
+            ./build.sh release static install
       - checkout
       - run:
           name: configure
