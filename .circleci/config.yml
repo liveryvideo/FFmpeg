@@ -63,6 +63,13 @@ jobs:
             make -j8
             cd ..
             sudo make install
+      - run:
+          name: svt
+          command: |
+            cd /tmp
+            git clone https://github.com/OpenVisualCloud/SVT-HEVC.git
+            cd SVT-HEVC/Build/linux
+            ./build release static install
       - checkout
       - run:
           name: configure
