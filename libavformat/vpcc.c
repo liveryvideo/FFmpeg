@@ -120,6 +120,14 @@ int ff_isom_get_vpcc_features(AVFormatContext *s, AVCodecParameters *par,
     int level = par->level == FF_LEVEL_UNKNOWN ?
         get_vp9_level(par, frame_rate) : par->level;
     int bit_depth = get_bit_depth(s, par->format);
+    //Temp fix wrong bit_depth due to wrong par->format AV_PIX_FMT_VAAPI_VLD.
+    //par->format should be AV_PIX_FMT_NV12 if -vf "format=nv12..."
+    if (profile <= 1 && bit_depth != 8) {
+      bit_depth = 8;
+    }
+    else if (bit_depth != 10 && bit_depth != 12) {
+      bit_depth = 10;
+    }
     int vpx_chroma_subsampling =
         get_vpx_chroma_subsampling(s, par->format, par->chroma_location);
     int vpx_video_full_range_flag =
