@@ -375,6 +375,10 @@ static void *thr_io_write(void *arg) {
  * Released connections are used first.
  */
 static connection *claim_connection(char *url, int need_new_connection) {
+    if (url == NULL) {
+        av_log(NULL, AV_LOG_INFO, "Claimed conn_id: -1, url: NULL\n");
+        return NULL;
+    }
     int64_t lowest_release_time = av_gettime() / 1000;
     int conn_nr = -1;
     connection *conn = NULL;
@@ -395,6 +399,10 @@ static connection *claim_connection(char *url, int need_new_connection) {
 
     if (conn_nr == -1) {
         conn = calloc(1, sizeof(*conn));
+        if (conn == NULL) {
+            pthread_mutex_unlock(&connections_mutex);
+            return conn;
+        }
         //TODO: In theory when we have a rollover of total_nr_of_connections we could claim a connection number that is still in use.
         conn_nr = total_nr_of_connections;
         conn->last_chunk_written = 0;
@@ -427,24 +435,14 @@ static connection *claim_connection(char *url, int need_new_connection) {
         av_log(NULL, AV_LOG_INFO, "No free connections so added one. Url: %s, tail: %d\n", url, connections_tail->nr);
     }
 
-    if (conn == NULL) {
-        return conn;
-    }
-
     if (need_new_connection && conn->opened) {
         conn->opened = 0;
         ff_format_io_close(conn->s, &conn->out);
     }
-    conn->url = NULL;
-    if (url != NULL) {
-        av_log(NULL, AV_LOG_INFO, "Claimed conn_id: %d, url: %s\n", conn_nr, url);
-        len = strlen(url) + 1;
-        conn->url = malloc(len);
-        av_strlcpy(conn->url, url, len);
-    }
-    else {
-        av_log(NULL, AV_LOG_INFO, "Claimed conn_id: %d, url: NULL\n", conn_nr);
-    }
+    av_log(NULL, AV_LOG_INFO, "Claimed conn_id: %d, url: %s\n", conn_nr, url);
+    len = strlen(url) + 1;
+    conn->url = malloc(len);
+    av_strlcpy(conn->url, url, len);
     conn->claimed = 1;
     conn->nr = conn_nr;
     pthread_mutex_unlock(&connections_mutex);
