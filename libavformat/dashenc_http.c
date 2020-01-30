@@ -375,9 +375,13 @@ static void *thr_io_write(void *arg) {
  * Released connections are used first.
  */
 static connection *claim_connection(char *url, int need_new_connection) {
+    if (url == NULL) {
+        av_log(NULL, AV_LOG_INFO, "Claimed conn_id: -1, url: NULL\n");
+        return NULL;
+    }
     int64_t lowest_release_time = av_gettime() / 1000;
     int conn_nr = -1;
-    connection *conn;
+    connection *conn = NULL;
     connection *conn_l = connections;
     size_t len;
     pthread_mutex_lock(&connections_mutex);
@@ -395,6 +399,10 @@ static connection *claim_connection(char *url, int need_new_connection) {
 
     if (conn_nr == -1) {
         conn = calloc(1, sizeof(*conn));
+        if (conn == NULL) {
+            pthread_mutex_unlock(&connections_mutex);
+            return conn;
+        }
         //TODO: In theory when we have a rollover of total_nr_of_connections we could claim a connection number that is still in use.
         conn_nr = total_nr_of_connections;
         conn->last_chunk_written = 0;
@@ -431,7 +439,6 @@ static connection *claim_connection(char *url, int need_new_connection) {
         conn->opened = 0;
         ff_format_io_close(conn->s, &conn->out);
     }
-
     av_log(NULL, AV_LOG_INFO, "Claimed conn_id: %d, url: %s\n", conn_nr, url);
     len = strlen(url) + 1;
     conn->url = malloc(len);
@@ -596,7 +603,7 @@ void pool_free_all(AVFormatContext *s) {
 
 void pool_write_flush(const unsigned char *buf, int size, int conn_nr) {
     connection *conn;
-    chunk *chunk;
+    chunk *chunk_ptr;
 
     if (conn_nr < 0) {
         av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr in pool_write_flush. conn_nr: %d\n", conn_nr);
@@ -611,17 +618,18 @@ void pool_write_flush(const unsigned char *buf, int size, int conn_nr) {
     }
 
     //Save the chunk in memory
-    chunk = malloc(sizeof(chunk));
-    chunk->size = size;
-    chunk->nr = conn->nr_of_chunks;
-    chunk->buf = malloc(size);
-    if (chunk->buf == NULL) {
-        av_log(NULL, AV_LOG_WARNING, "Could not malloc in pool_write_flush.\n");
+    chunk_ptr = malloc(sizeof(chunk));
+    chunk_ptr->size = size;
+    chunk_ptr->nr = conn->nr_of_chunks;
+    chunk_ptr->buf = malloc(size);
+    if (chunk_ptr->buf == NULL) {
+        av_log(NULL, AV_LOG_WARNING, "Could not malloc pool_write_flush.\n");
+        return;
     }
-    memcpy(chunk->buf, buf, size);
+    memcpy(chunk_ptr->buf, buf, size);
 
     pthread_mutex_lock(&conn->chunks_mutex);
-    av_dynarray_add(&conn->chunks_ptr, &conn->nr_of_chunks, chunk);
+    av_dynarray_add(&conn->chunks_ptr, &conn->nr_of_chunks, chunk_ptr);
     pthread_mutex_unlock(&conn->chunks_mutex);
 
     if (conn->opened_error) {
