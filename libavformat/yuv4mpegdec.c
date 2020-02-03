@@ -26,7 +26,7 @@
 #include "yuv4mpeg.h"
 
 /* Header size increased to allow room for optional flags */
-#define MAX_YUV4_HEADER 80
+#define MAX_YUV4_HEADER 96
 #define MAX_FRAME_HEADER 80
 
 static int yuv4_read_header(AVFormatContext *s)
@@ -53,10 +53,14 @@ static int yuv4_read_header(AVFormatContext *s)
             break;
         }
     }
-    if (i == MAX_YUV4_HEADER)
-        return -1;
-    if (strncmp(header, Y4M_MAGIC, strlen(Y4M_MAGIC)))
-        return -1;
+    if (i == MAX_YUV4_HEADER) {
+        av_log(s, AV_LOG_ERROR, "Header too large.\n");
+        return AVERROR(EINVAL);
+    }
+    if (strncmp(header, Y4M_MAGIC, strlen(Y4M_MAGIC))) {
+        av_log(s, AV_LOG_ERROR, "Invalid magic number for yuv4mpeg.\n");
+        return AVERROR(EINVAL);
+    }
 
     header_end = &header[i + 1]; // Include space
     for (tokstart = &header[strlen(Y4M_MAGIC) + 1];
@@ -326,6 +330,8 @@ static int yuv4_read_seek(AVFormatContext *s, int stream_index,
 
     if (flags & AVSEEK_FLAG_BACKWARD)
         pts = FFMAX(0, pts - 1);
+    if (pts < 0)
+        return -1;
     pos = pts * s->packet_size;
 
     if (avio_seek(s->pb, pos + s->internal->data_offset, SEEK_SET) < 0)

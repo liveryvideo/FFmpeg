@@ -55,7 +55,7 @@ static int av_log_level = AV_LOG_INFO;
 static int flags;
 
 #define NB_LEVELS 8
-#if defined(_WIN32) && HAVE_SETCONSOLETEXTATTRIBUTE
+#if defined(_WIN32) && HAVE_SETCONSOLETEXTATTRIBUTE && HAVE_GETSTDHANDLE
 #include <windows.h>
 static const uint8_t color[16 + AV_CLASS_CATEGORY_NB] = {
     [AV_LOG_PANIC  /8] = 12,
@@ -122,7 +122,7 @@ static int use_color = -1;
 
 static void check_color_terminal(void)
 {
-#if defined(_WIN32) && HAVE_SETCONSOLETEXTATTRIBUTE
+#if defined(_WIN32) && HAVE_SETCONSOLETEXTATTRIBUTE && HAVE_GETSTDHANDLE
     CONSOLE_SCREEN_BUFFER_INFO con_info;
     con = GetStdHandle(STD_ERROR_HANDLE);
     use_color = (con != INVALID_HANDLE_VALUE) && !getenv("NO_COLOR") &&
@@ -157,7 +157,7 @@ static void colored_fputs(int level, int tint, const char *str)
     if (level == AV_LOG_INFO/8) local_use_color = 0;
     else                        local_use_color = use_color;
 
-#if defined(_WIN32) && HAVE_SETCONSOLETEXTATTRIBUTE
+#if defined(_WIN32) && HAVE_SETCONSOLETEXTATTRIBUTE && HAVE_GETSTDHANDLE
     if (local_use_color)
         SetConsoleTextAttribute(con, background | color[level]);
     fputs(str, stderr);
@@ -226,6 +226,8 @@ static const char *get_level_str(int level)
         return "quiet";
     case AV_LOG_DEBUG:
         return "debug";
+    case AV_LOG_TRACE:
+        return "trace";
     case AV_LOG_VERBOSE:
         return "verbose";
     case AV_LOG_INFO:
@@ -360,19 +362,19 @@ static void (*av_log_callback)(void*, int, const char*, va_list) =
 
 void av_log(void* avcl, int level, const char *fmt, ...)
 {
-    AVClass* avc = avcl ? *(AVClass **) avcl : NULL;
     va_list vl;
     va_start(vl, fmt);
-    if (avc && avc->version >= (50 << 16 | 15 << 8 | 2) &&
-        avc->log_level_offset_offset && level >= AV_LOG_FATAL)
-        level += *(int *) (((uint8_t *) avcl) + avc->log_level_offset_offset);
     av_vlog(avcl, level, fmt, vl);
     va_end(vl);
 }
 
 void av_vlog(void* avcl, int level, const char *fmt, va_list vl)
 {
+    AVClass* avc = avcl ? *(AVClass **) avcl : NULL;
     void (*log_callback)(void*, int, const char*, va_list) = av_log_callback;
+    if (avc && avc->version >= (50 << 16 | 15 << 8 | 2) &&
+        avc->log_level_offset_offset && level >= AV_LOG_FATAL)
+        level += *(int *) (((uint8_t *) avcl) + avc->log_level_offset_offset);
     if (log_callback)
         log_callback(avcl, level, fmt, vl);
 }

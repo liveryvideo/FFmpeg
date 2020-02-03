@@ -508,7 +508,7 @@ static int hls_slice_header(HEVCContext *s)
     sh->first_slice_in_pic_flag = get_bits1(gb);
     if (s->ref && sh->first_slice_in_pic_flag) {
         av_log(s->avctx, AV_LOG_ERROR, "Two slices reporting being the first in the same frame.\n");
-        return 1; // This slice will be skiped later, do not corrupt state
+        return 1; // This slice will be skipped later, do not corrupt state
     }
 
     if ((IS_IDR(s) || IS_BLA(s)) && sh->first_slice_in_pic_flag) {
@@ -2778,14 +2778,14 @@ static int set_side_data(HEVCContext *s)
                metadata->MaxCLL, metadata->MaxFALL);
     }
 
-    if (s->sei.a53_caption.a53_caption) {
-        AVFrameSideData* sd = av_frame_new_side_data(out,
-                                                     AV_FRAME_DATA_A53_CC,
-                                                     s->sei.a53_caption.a53_caption_size);
-        if (sd)
-            memcpy(sd->data, s->sei.a53_caption.a53_caption, s->sei.a53_caption.a53_caption_size);
-        av_freep(&s->sei.a53_caption.a53_caption);
-        s->sei.a53_caption.a53_caption_size = 0;
+    if (s->sei.a53_caption.buf_ref) {
+        HEVCSEIA53Caption *a53 = &s->sei.a53_caption;
+
+        AVFrameSideData *sd = av_frame_new_side_data_from_buf(out, AV_FRAME_DATA_A53_CC, a53->buf_ref);
+        if (!sd)
+            av_buffer_unref(&a53->buf_ref);
+        a53->buf_ref = NULL;
+
         s->avctx->properties |= FF_CODEC_PROPERTY_CLOSED_CAPTIONS;
     }
 
@@ -3077,7 +3077,7 @@ static int decode_nal_units(HEVCContext *s, const uint8_t *buf, int length)
 
         if (s->avctx->skip_frame >= AVDISCARD_ALL ||
             (s->avctx->skip_frame >= AVDISCARD_NONREF
-            && ff_hevc_nal_is_nonref(nal->type)))
+            && ff_hevc_nal_is_nonref(nal->type)) || nal->nuh_layer_id > 0)
             continue;
 
         ret = decode_nal_unit(s, nal);
@@ -3336,6 +3336,8 @@ static av_cold int hevc_decode_free(AVCodecContext *avctx)
 
     ff_h2645_packet_uninit(&s->pkt);
 
+    ff_hevc_reset_sei(&s->sei);
+
     return 0;
 }
 
@@ -3461,6 +3463,13 @@ static int hevc_update_thread_context(AVCodecContext *dst,
         s->max_ra = INT_MAX;
     }
 
+    av_buffer_unref(&s->sei.a53_caption.buf_ref);
+    if (s0->sei.a53_caption.buf_ref) {
+        s->sei.a53_caption.buf_ref = av_buffer_ref(s0->sei.a53_caption.buf_ref);
+        if (!s->sei.a53_caption.buf_ref)
+            return AVERROR(ENOMEM);
+    }
+
     s->sei.frame_packing        = s0->sei.frame_packing;
     s->sei.display_orientation  = s0->sei.display_orientation;
     s->sei.mastering_display    = s0->sei.mastering_display;
@@ -3529,6 +3538,7 @@ static void hevc_decode_flush(AVCodecContext *avctx)
 {
     HEVCContext *s = avctx->priv_data;
     ff_hevc_flush_dpb(s);
+    ff_hevc_reset_sei(&s->sei);
     s->max_ra = INT_MAX;
     s->eos = 1;
 }
