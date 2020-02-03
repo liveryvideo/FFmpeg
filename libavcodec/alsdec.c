@@ -348,6 +348,11 @@ static av_cold int read_specific_config(ALSDecContext *ctx)
     if (als_id != MKBETAG('A','L','S','\0'))
         return AVERROR_INVALIDDATA;
 
+    if (avctx->channels > FF_SANE_NB_CHANNELS) {
+        avpriv_request_sample(avctx, "Huge number of channels\n");
+        return AVERROR_PATCHWELCOME;
+    }
+
     ctx->cur_frame_length = sconf->frame_length;
 
     // read channel config
@@ -816,7 +821,9 @@ static int read_var_block_data(ALSDecContext *ctx, ALSBlockData *bd)
         unsigned int low;
         unsigned int value;
 
-        ff_bgmc_decode_init(gb, &high, &low, &value);
+        int ret = ff_bgmc_decode_init(gb, &high, &low, &value);
+        if (ret < 0)
+            return ret;
 
         current_res = bd->raw_samples + start;
 
@@ -825,6 +832,9 @@ static int read_var_block_data(ALSDecContext *ctx, ALSBlockData *bd)
 
             k    [sb] = s[sb] > b ? s[sb] - b : 0;
             delta[sb] = 5 - s[sb] + k[sb];
+
+            if (k[sb] >= 32)
+                return AVERROR_INVALIDDATA;
 
             ff_bgmc_decode(gb, sb_len, current_res,
                         delta[sb], sx[sb], &high, &low, &value, ctx->bgmc_lut, ctx->bgmc_lut_status);
@@ -946,7 +956,7 @@ static int decode_var_block_data(ALSDecContext *ctx, ALSBlockData *bd)
 
         // reconstruct difference signal for prediction (joint-stereo)
         if (bd->js_blocks && bd->raw_other) {
-            int32_t *left, *right;
+            uint32_t *left, *right;
 
             if (bd->raw_other > raw_samples) {  // D = R - L
                 left  = raw_samples;
@@ -1465,6 +1475,9 @@ static int read_diff_float_data(ALSDecContext *ctx, unsigned int ra_frame) {
         ff_mlz_flush_dict(ctx->mlz);
     }
 
+    if (avctx->channels * 8 > get_bits_left(gb))
+        return AVERROR_INVALIDDATA;
+
     for (c = 0; c < avctx->channels; ++c) {
         if (use_acf) {
             //acf_flag
@@ -1805,15 +1818,17 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame_ptr,
     #define INTERLEAVE_OUTPUT(bps)                                                   \
     {                                                                                \
         int##bps##_t *dest = (int##bps##_t*)frame->data[0];                          \
+        int channels = avctx->channels;                                              \
+        int32_t **raw_samples = ctx->raw_samples;                                    \
         shift = bps - ctx->avctx->bits_per_raw_sample;                               \
         if (!ctx->cs_switch) {                                                       \
             for (sample = 0; sample < ctx->cur_frame_length; sample++)               \
-                for (c = 0; c < avctx->channels; c++)                                \
-                    *dest++ = ctx->raw_samples[c][sample] * (1U << shift);            \
+                for (c = 0; c < channels; c++)                                       \
+                    *dest++ = raw_samples[c][sample] * (1U << shift);                \
         } else {                                                                     \
             for (sample = 0; sample < ctx->cur_frame_length; sample++)               \
-                for (c = 0; c < avctx->channels; c++)                                \
-                    *dest++ = ctx->raw_samples[sconf->chan_pos[c]][sample] * (1U << shift); \
+                for (c = 0; c < channels; c++)                                       \
+                    *dest++ = raw_samples[sconf->chan_pos[c]][sample] * (1U << shift);\
         }                                                                            \
     }
 
