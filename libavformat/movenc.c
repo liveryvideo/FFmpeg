@@ -4734,7 +4734,9 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
 
         }
 
+        #if 0
         mov_write_exmg_tag(pb, mov);
+        #endif
     }
 
     #endif
