@@ -4669,7 +4669,7 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
             MOVTrack* track = &mov->tracks[i];
             char *mqtt_message_buffer = malloc(EXMG_MESSAGE_BUFFER_SIZE * sizeof(char)); // free'd after having been pop'd from queue and sent
 
-            float media_time_secs = (float) (track->frag_start / track->timescale);
+            float media_time_secs = (float) track->frag_start / (float) track->timescale;
 
             snprintf(mqtt_message_buffer, EXMG_MESSAGE_BUFFER_SIZE,
                 "{creation_time: %ld, exmg_track_fragment_info: {track_id: %d, media_time_in_seconds: %f, first_pts: %ld, timescale: %u, codec_id: %d, codec_type: '%s', bitrate: %ld}, exmg_key_map: {%d: %d}}",
@@ -4718,7 +4718,7 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
             char* mqtt_send_message_buffer = mov->exmg_messages_queue[message_q_pop_index];
             int64_t mqtt_send_message_media_time = mov->exmg_messages_queue_media_time[message_q_pop_index];
 
-            float next_popable_message_media_time = mqtt_send_message_media_time / track->timescale;
+            float next_popable_message_media_time = (float) mqtt_send_message_media_time / (float) track->timescale;
             float time_diff = media_time_secs - next_popable_message_media_time;
 
             av_log(mov, AV_LOG_VERBOSE, "Next pop'able message media time: %f\n", next_popable_message_media_time);
