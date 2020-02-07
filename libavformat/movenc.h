@@ -24,6 +24,8 @@
 #ifndef AVFORMAT_MOVENC_H
 #define AVFORMAT_MOVENC_H
 
+#include "libavutil/slicethread.h"
+
 #include "avformat.h"
 #include "movenccenc.h"
 
@@ -234,6 +236,7 @@ typedef struct MOVMuxContext {
     int64_t exmg_messages_queue_media_time[EXMG_MESSAGE_QUEUE_SIZE];
     int32_t exmg_messages_queue_push_idx;
     int32_t exmg_messages_queue_pop_idx;
+    AVSliceThread *exmg_worker_ctx;
 
     int need_rewrite_extradata;
 
@@ -242,6 +245,8 @@ typedef struct MOVMuxContext {
     int write_tmcd;
     MOVPrftBox write_prft;
     int empty_hdlr_name;
+    int exmg_key_system_mqtt_enabled;
+    int exmg_key_system_mqtt_dry_run;
 } MOVMuxContext;
 
 #define FF_MOV_FLAG_RTP_HINT              (1 <<  0)
