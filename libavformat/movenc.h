@@ -177,7 +177,7 @@ typedef enum {
     MOV_PRFT_NB
 } MOVPrftBox;
 
-#define EXMG_MESSAGE_QUEUE_SIZE 256
+#define EXMG_MESSAGE_QUEUE_SIZE 0xFFFF
 
 typedef struct MOVMuxContext {
     const AVClass *av_class;
