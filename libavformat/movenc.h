@@ -238,8 +238,9 @@ typedef struct MOVMuxContext {
     int32_t exmg_messages_queue_push_idx;
     int32_t exmg_messages_queue_pop_idx;
 
-    AVMutex exmg_queue_lock;
-    AVSliceThread *exmg_worker_ctx;
+    pthread_mutex_t exmg_queue_lock;
+    pthread_t exmg_queue_worker;
+    pthread_cond_t exmg_queue_cond;
 
     int need_rewrite_extradata;
 

@@ -120,9 +120,9 @@ static const AVClass flavor ## _muxer_class = {\
     .version    = LIBAVUTIL_VERSION_INT,\
 };
 
-static int mqtt_client_send(const char* message);
+static int exmg_mqtt_client_send(const char* message);
 
-static void mqtt_client_worker(MOVMuxContext* mov, int jobnr, int threadnr, int nb_jobs, int nb_threads);
+static void exmg_mqtt_client_worker(MOVMuxContext* mov);
 
 static int get_moov_size(AVFormatContext *s);
 
@@ -4654,7 +4654,12 @@ static void exmg_mqtt_queue_pop(MOVMuxContext *mov)
         int32_t message_q_pop_index = mov->exmg_messages_queue_pop_idx + 1;
         char* mqtt_send_message_buffer = mov->exmg_messages_queue[message_q_pop_index];
         int64_t mqtt_send_message_media_time = mov->exmg_messages_queue_media_time[message_q_pop_index];
-        ff_mutex_unlock(&mov->exmg_queue_lock);
+
+        if (mqtt_send_message_buffer == NULL) {
+            av_log(mov, AV_LOG_VERBOSE, "No MQTT messages to send!\n");
+            ff_mutex_unlock(&mov->exmg_queue_lock);
+            continue;
+        }
 
         float next_popable_message_media_time = (float) mqtt_send_message_media_time / (float) track->timescale;
         float time_diff = media_time_secs - next_popable_message_media_time;
@@ -4663,14 +4668,13 @@ static void exmg_mqtt_queue_pop(MOVMuxContext *mov)
 
         if (time_diff >= EXMG_MESSAGE_SEND_DELAY) {
 
-            ff_mutex_lock(&mov->exmg_queue_lock);
+            av_log(mov, AV_LOG_VERBOSE, "EXMG MQTT message queue pop, media-time difference is: %f secs\n", time_diff);
+
             mov->exmg_messages_queue_pop_idx++;
             ff_mutex_unlock(&mov->exmg_queue_lock);
 
-            av_log(mov, AV_LOG_VERBOSE, "EXMG MQTT message queue pop, media-time difference is: %f secs\n", time_diff);
-
             if (!mov->exmg_key_system_mqtt_dry_run && getenv("FF_EXMG_KEYS_MQTT_DRY_RUN") == NULL) {
-                mqtt_client_send(mqtt_send_message_buffer);
+                exmg_mqtt_client_send(mqtt_send_message_buffer);
             } else {
                 av_log(mov, AV_LOG_VERBOSE, "EXMG MQTT dry-run, not sending.");
             }
@@ -4678,6 +4682,7 @@ static void exmg_mqtt_queue_pop(MOVMuxContext *mov)
             free(mqtt_send_message_buffer); // free the buffer we malloc'd when put on the queue
 
         } else {
+            ff_mutex_unlock(&mov->exmg_queue_lock);
             av_log(mov, AV_LOG_VERBOSE, "EXMG MQTT message queue not pop'd, media-time difference is: %f secs\n", time_diff);
         }
         
@@ -4750,7 +4755,9 @@ static void exmg_mqtt_queue_push(MOVMuxContext *mov, int tracks, int64_t mdat_si
             track->track_id,
             av_get_media_type_string(track->par->codec_type));
 
+        #if 0
         exmg_mqtt_queue_pop(mov);
+        #endif
     }
 
     #if 0
@@ -4778,7 +4785,7 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
         mov_write_prft_tag(pb, mov, tracks);
 
     #if 1
-    if (1 || mov->exmg_key_system_mqtt_enabled || getenv("FF_EXMG_KEYS_MQTT") != NULL) {
+    if (mov->exmg_key_system_mqtt_enabled || getenv("FF_EXMG_KEYS_MQTT") != NULL) {
         av_log(mov, AV_LOG_VERBOSE, "EXMG key system enabled, DASH MOOF with %d tracks, and %ld bytes of mdat\n", tracks, mdat_size);
         exmg_mqtt_queue_push(mov, tracks, mdat_size);
     }
@@ -6350,10 +6357,10 @@ static int mov_init(AVFormatContext *s)
     mov->exmg_key_id_counter = 0;
     mov->exmg_messages_queue_push_idx = 0;
     mov->exmg_messages_queue_pop_idx = -1;
-
-    avpriv_slicethread_create(&mov->exmg_worker_ctx, mov, mqtt_client_worker, NULL, 1);
     
-    //avpriv_slicethread_execute(mov->exmg_worker_ctx, 1, 0);
+    memset(&mov->exmg_messages_queue, 0, sizeof(mov->exmg_messages_queue));
+
+    pthread_create(&mov->exmg_queue_worker, NULL, exmg_mqtt_client_worker, mov);
 
     ff_mutex_init(&mov->exmg_queue_lock, NULL);
 
@@ -7192,7 +7199,7 @@ AVOutputFormat ff_f4v_muxer = {
 
 #define EXMG_MQTT_VERSION MQTTVERSION_3_1_1
 
-static int mqtt_client_connect(MQTTClient* client)
+static int exmg_mqtt_client_connect(MQTTClient* client)
 {
     MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
     MQTTClient_SSLOptions ssl_opts = MQTTClient_SSLOptions_initializer;
@@ -7226,23 +7233,20 @@ static int mqtt_client_connect(MQTTClient* client)
     return rc;
 }
 
-static void mqtt_client_worker(MOVMuxContext* mov, int jobnr, int threadnr, int nb_jobs, int nb_threads)
+static void exmg_mqtt_client_worker(MOVMuxContext* mov)
 {
-    av_log(mov, AV_LOG_VERBOSE,
-        "MQTT client worker jobnr %d, threadnr %d, nb_jobs %d, nb_threads %d\n",
-        jobnr, threadnr, nb_jobs, nb_threads);
-
-
-
-    // reschedule
-    av_usleep(250000);
-    avpriv_slicethread_execute(mov->exmg_worker_ctx, 1, 0);
+    while(1) {
+        //av_log(mov, AV_LOG_VERBOSE, "EXMG MQTT client worker job\n");
+        exmg_mqtt_queue_pop(mov);
+        // reschedule
+        av_usleep(20000);
+    }
 }
 
-static int mqtt_client_send(const char* message)
+static int exmg_mqtt_client_send(const char* message)
 {
 
-    av_log(NULL, AV_LOG_VERBOSE, "mqtt_client_send: %s\n", message);
+    av_log(NULL, AV_LOG_VERBOSE, "exmg_mqtt_client_send: %s\n", message);
 
     MQTTClient client;
     MQTTProperties pub_props = MQTTProperties_initializer;
@@ -7281,7 +7285,7 @@ static int mqtt_client_send(const char* message)
     }
     */
 
-    if (mqtt_client_connect(client) != MQTTCLIENT_SUCCESS)
+    if (exmg_mqtt_client_connect(client) != MQTTCLIENT_SUCCESS)
         goto exit;
 
     int data_len = 0;
@@ -7297,7 +7301,7 @@ static int mqtt_client_send(const char* message)
 
     if (rc != 0)
     {
-        mqtt_client_connect(client);
+        exmg_mqtt_client_connect(client);
 
         rc = MQTTClient_publish(client, topic, data_len, buffer, 0, 0, NULL);
     }
