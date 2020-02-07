@@ -4653,7 +4653,6 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
     if (mov->write_prft > MOV_PRFT_NONE && mov->write_prft < MOV_PRFT_NB)
         mov_write_prft_tag(pb, mov, tracks);
 
-
     #if 1
 
     if (mov->flags & FF_MOV_FLAG_DASH) {
@@ -4690,17 +4689,27 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
             mov->exmg_messages_queue_media_time[mov->exmg_messages_queue_push_idx] = track->frag_start;
             mov->exmg_messages_queue[mov->exmg_messages_queue_push_idx] = mqtt_message_buffer;
             mov->exmg_messages_queue_push_idx++;
-            // allow write over queue in circular way
+            // handle push index overflow
             if (mov->exmg_messages_queue_push_idx >= EXMG_MESSAGE_QUEUE_SIZE) {
+                // catch edge condition: queue overflows without anything read yet
+                if (mov->exmg_messages_queue_pop_idx == -1) {
+                    av_log(mov, AV_LOG_ERROR, "EXMG MQTT message queue overflowed. The delay set is probably too high. Exiting process now.");
+                    exit(0);
+                }
+                // normal operation, allow write over queue in circular way
                 mov->exmg_messages_queue_push_idx = 0;
             }
-            // queue full?
+            // general case: queue is full when push index equals pop index
             if (mov->exmg_messages_queue_push_idx == mov->exmg_messages_queue_pop_idx) {
                 av_log(mov, AV_LOG_ERROR, "EXMG MQTT message queue full. The delay set is probably too high. Exiting process now.");
                 exit(0);
             }
 
-            av_log(mov, AV_LOG_VERBOSE, "Pushed message on queue with timestamp: %f\n", media_time_secs);
+            av_log(mov, AV_LOG_VERBOSE,
+                "Pushed message on queue with timestamp: %f for track %d type: %s\n",
+                media_time_secs,
+                track->track_id,
+                av_get_media_type_string(track->par->codec_type));
 
             // Q: iterate over whole q until pop_index == push_index - 1 and while time_diff is > delay ?
 
