@@ -24,6 +24,7 @@
 #ifndef AVFORMAT_MOVENC_H
 #define AVFORMAT_MOVENC_H
 
+#include "libavutil/thread.h"
 #include "libavutil/slicethread.h"
 
 #include "avformat.h"
@@ -236,6 +237,8 @@ typedef struct MOVMuxContext {
     int64_t exmg_messages_queue_media_time[EXMG_MESSAGE_QUEUE_SIZE];
     int32_t exmg_messages_queue_push_idx;
     int32_t exmg_messages_queue_pop_idx;
+
+    AVMutex exmg_queue_lock;
     AVSliceThread *exmg_worker_ctx;
 
     int need_rewrite_extradata;
