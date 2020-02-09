@@ -4638,54 +4638,56 @@ static int mov_write_exmg_tag(AVIOContext *pb, MOVMuxContext *mov)
 
 #define EXMG_MESSAGE_SEND_DELAY 10.0f
 #define EXMG_MESSAGE_BUFFER_SIZE 4096
+#define EXMG_MESSAGE_KEY_SCOPE_DURATION_SECONDS 0.5
 
 static void exmg_mqtt_queue_pop(MOVMuxContext *mov)
 {
-    for (int i = 0; i < mov->nb_streams; i++) {
+    if (mov->nb_streams != 1) {
+        av_log(mov, AV_LOG_WARNING, "Track has %d tracks, but should have exactly 1.", mov->nb_streams);
+        return;
+    }
 
-        MOVTrack* track = &mov->tracks[i];
+    MOVTrack* track = &mov->tracks[0];
 
-        float media_time_secs = (float) track->frag_start / (float) track->timescale;
+    float media_time_secs = (float) track->frag_start / (float) track->timescale;
 
-        // Q: iterate over whole q until pop_index == push_index - 1 and while time_diff is > delay ?
+    // Q: iterate over whole q until pop_index == push_index - 1 and while time_diff is > delay ?
 
-        // pop message from queue with respect to delay set
-        ff_mutex_lock(&mov->exmg_queue_lock);
-        int32_t message_q_pop_index = mov->exmg_messages_queue_pop_idx + 1;
-        char* mqtt_send_message_buffer = mov->exmg_messages_queue[message_q_pop_index];
-        int64_t mqtt_send_message_media_time = mov->exmg_messages_queue_media_time[message_q_pop_index];
+    // pop message from queue with respect to delay set
+    ff_mutex_lock(&mov->exmg_queue_lock);
+    int32_t message_q_pop_index = mov->exmg_messages_queue_pop_idx + 1;
+    char* mqtt_send_message_buffer = mov->exmg_messages_queue[message_q_pop_index];
+    int64_t mqtt_send_message_media_time = mov->exmg_messages_queue_media_time[message_q_pop_index];
 
-        if (mqtt_send_message_buffer == NULL) {
-            av_log(mov, AV_LOG_VERBOSE, "No MQTT messages to send!\n");
-            ff_mutex_unlock(&mov->exmg_queue_lock);
-            continue;
-        }
+    if (mqtt_send_message_buffer == NULL) {
+        av_log(mov, AV_LOG_VERBOSE, "No MQTT messages to send!\n");
+        ff_mutex_unlock(&mov->exmg_queue_lock);
+        return;
+    }
 
-        float next_popable_message_media_time = (float) mqtt_send_message_media_time / (float) track->timescale;
-        float time_diff = media_time_secs - next_popable_message_media_time;
+    float next_popable_message_media_time = (float) mqtt_send_message_media_time / (float) track->timescale;
+    float time_diff = media_time_secs - next_popable_message_media_time;
 
-        av_log(mov, AV_LOG_VERBOSE, "Next pop'able message media time: %f\n", next_popable_message_media_time);
+    av_log(mov, AV_LOG_VERBOSE, "Next pop'able message media time: %f\n", next_popable_message_media_time);
 
-        if (time_diff >= EXMG_MESSAGE_SEND_DELAY) {
+    if (time_diff >= EXMG_MESSAGE_SEND_DELAY) {
 
-            av_log(mov, AV_LOG_VERBOSE, "EXMG MQTT message queue pop, media-time difference is: %f secs\n", time_diff);
+        av_log(mov, AV_LOG_VERBOSE, "EXMG MQTT message queue pop, media-time difference is: %f secs\n", time_diff);
 
-            mov->exmg_messages_queue_pop_idx++;
-            ff_mutex_unlock(&mov->exmg_queue_lock);
+        mov->exmg_messages_queue_pop_idx++;
+        ff_mutex_unlock(&mov->exmg_queue_lock);
 
-            if (!mov->exmg_key_system_mqtt_dry_run && getenv("FF_EXMG_KEYS_MQTT_DRY_RUN") == NULL) {
-                exmg_mqtt_client_send(mqtt_send_message_buffer);
-            } else {
-                av_log(mov, AV_LOG_VERBOSE, "EXMG MQTT dry-run, not sending.");
-            }
-
-            free(mqtt_send_message_buffer); // free the buffer we malloc'd when put on the queue
-
+        if (!mov->exmg_key_system_mqtt_dry_run && getenv("FF_EXMG_KEYS_MQTT_DRY_RUN") == NULL) {
+            exmg_mqtt_client_send(mqtt_send_message_buffer);
         } else {
-            ff_mutex_unlock(&mov->exmg_queue_lock);
-            av_log(mov, AV_LOG_VERBOSE, "EXMG MQTT message queue not pop'd, media-time difference is: %f secs\n", time_diff);
+            av_log(mov, AV_LOG_VERBOSE, "EXMG MQTT dry-run, not sending.");
         }
-        
+
+        free(mqtt_send_message_buffer); // free the buffer we malloc'd when put on the queue
+
+    } else {
+        ff_mutex_unlock(&mov->exmg_queue_lock);
+        av_log(mov, AV_LOG_VERBOSE, "EXMG MQTT message queue not pop'd, media-time difference is: %f secs\n", time_diff);
     }
 }
 
@@ -4695,70 +4697,86 @@ static void exmg_mqtt_queue_push(MOVMuxContext *mov, int tracks, int64_t mdat_si
         return;
     }
 
-    /**
-     *  EXMG MQTT message sending.
-     *  On a longer term, all the info in here should be
-     *  createable from the mp4-fragment/exmg tag data
-     *  and therefore read from the DASH encoding output,
-     *  and thus this part could be decoupled from actual FFmpeg codebase.
-     * */
-    for (int i = 0; i < mov->nb_streams; i++) {
-        MOVTrack* track = &mov->tracks[i];
-        char *mqtt_message_buffer = malloc(EXMG_MESSAGE_BUFFER_SIZE * sizeof(char)); // free'd after having been pop'd from queue and sent
+    if (mov->nb_streams > 1) {
+        av_log(mov, AV_LOG_ERROR, "EXMG key system does not support multiple tracks per DASH fragment! Exiting process.");
+        exit(0); // 
+        return;
+    }
 
-        float media_time_secs = (float) track->frag_start / (float) track->timescale;
+    if (mov->nb_streams != 1) {
+        av_log(mov, AV_LOG_WARNING, "Track has %d tracks, but should have exactly 1.", mov->nb_streams);
+        return;
+    }
 
-        snprintf(mqtt_message_buffer, EXMG_MESSAGE_BUFFER_SIZE,
-            "{creation_time: %ld, exmg_track_fragment_info: {track_id: %d, media_time_in_seconds: %f, first_pts: %ld, timescale: %u, codec_id: %d, codec_type: '%s', bitrate: %ld}, exmg_key_map: {%d: %d}}",
-            av_gettime(),
-            track->track_id,
-            media_time_secs,
-            track->frag_start,
-            track->timescale,
-            track->par->codec_id, // TODO: replace by codec_tag (4CC)
-            av_get_media_type_string(track->par->codec_type),
-            track->par->bit_rate,
-            mov->exmg_key_id_counter,
-            0
-        );
+    MOVTrack* track = &mov->tracks[0];
+    float media_time_secs = (float) track->frag_start / (float) track->timescale;
+    float key_scope_secs =  (float) mov->exmg_key_scope_pts / (float) track->timescale;
 
-        // push the message for this fragment on the queue
+    if (mov->exmg_key_scope_pts != -1 // trivial init condition for first key
+        && media_time_secs < key_scope_secs + EXMG_MESSAGE_KEY_SCOPE_DURATION_SECONDS) {
+        return; // no-op, no need to push a message
+    }
 
-        ff_mutex_lock(&mov->exmg_queue_lock);
+    // update key scoping pts
+    mov->exmg_key_scope_pts = track->frag_start;
 
-        mov->exmg_messages_queue_media_time[mov->exmg_messages_queue_push_idx] = track->frag_start;
-        mov->exmg_messages_queue[mov->exmg_messages_queue_push_idx] = mqtt_message_buffer;
-        mov->exmg_messages_queue_push_idx++;
-        // handle push index overflow
-        if (mov->exmg_messages_queue_push_idx >= EXMG_MESSAGE_QUEUE_SIZE) {
-            // catch edge condition: queue overflows without anything read yet
-            if (mov->exmg_messages_queue_pop_idx == -1) {
-                av_log(mov, AV_LOG_ERROR, "EXMG MQTT message queue overflowed. The delay set is probably too high. Exiting process now.");
-                ff_mutex_unlock(&mov->exmg_queue_lock);
-                exit(0);
-            }
-            // normal operation, allow write over queue in circular way
-            mov->exmg_messages_queue_push_idx = 0;
-        }
-        // general case: queue is full when push index equals pop index
-        if (mov->exmg_messages_queue_push_idx == mov->exmg_messages_queue_pop_idx) {
-            av_log(mov, AV_LOG_ERROR, "EXMG MQTT message queue full. The delay set is probably too high. Exiting process now.");
+    char *mqtt_message_buffer = malloc(EXMG_MESSAGE_BUFFER_SIZE * sizeof(char)); // free'd after having been pop'd from queue and sent
+    unsigned int media_encrypt_key = (int) roundf((float) 0xFFFFFFFF * ((float) rand() / (float) RAND_MAX));
+
+    // write message data
+    snprintf(mqtt_message_buffer, EXMG_MESSAGE_BUFFER_SIZE,
+        "{creation_time: %ld, exmg_track_fragment_info: {track_id: %d, media_time_in_seconds: %f, first_pts: %ld, timescale: %u, codec_id: %d, codec_type: '%s', bitrate: %ld}, exmg_key_id: %d, exmg_key: %u}",
+        av_gettime(),
+        track->track_id,
+        media_time_secs,
+        track->frag_start,
+        track->timescale,
+        track->par->codec_id, // TODO: replace by codec_tag (4CC)
+        av_get_media_type_string(track->par->codec_type),
+        track->par->bit_rate,
+        mov->exmg_key_id_counter,
+        media_encrypt_key
+    );
+    // update counter and key storage
+    mov->exmg_key_id_counter++;
+    mov->exmg_key = media_encrypt_key;
+
+    // push the message for this fragment on the queue
+    ff_mutex_lock(&mov->exmg_queue_lock);
+
+    mov->exmg_messages_queue_media_time[mov->exmg_messages_queue_push_idx] = track->frag_start;
+    mov->exmg_messages_queue_media_key[mov->exmg_messages_queue_push_idx] = media_encrypt_key;
+    mov->exmg_messages_queue[mov->exmg_messages_queue_push_idx] = mqtt_message_buffer;
+    mov->exmg_messages_queue_push_idx++;
+    // handle push index overflow
+    if (mov->exmg_messages_queue_push_idx >= EXMG_MESSAGE_QUEUE_SIZE) {
+        // catch edge condition: queue overflows without anything read yet
+        if (mov->exmg_messages_queue_pop_idx == -1) {
+            av_log(mov, AV_LOG_ERROR, "EXMG MQTT message queue overflowed. The delay set is probably too high. Exiting process now.");
             ff_mutex_unlock(&mov->exmg_queue_lock);
             exit(0);
         }
-
-        ff_mutex_unlock(&mov->exmg_queue_lock);
-
-        av_log(mov, AV_LOG_VERBOSE,
-            "Pushed message on queue with timestamp: %f for track %d type: %s\n",
-            media_time_secs,
-            track->track_id,
-            av_get_media_type_string(track->par->codec_type));
-
-        #if 0
-        exmg_mqtt_queue_pop(mov);
-        #endif
+        // normal operation, allow write over queue in circular way
+        mov->exmg_messages_queue_push_idx = 0;
     }
+    // general case: queue is full when push index equals pop index
+    if (mov->exmg_messages_queue_push_idx == mov->exmg_messages_queue_pop_idx) {
+        av_log(mov, AV_LOG_ERROR, "EXMG MQTT message queue full. The delay set is probably too high. Exiting process now.");
+        ff_mutex_unlock(&mov->exmg_queue_lock);
+        exit(0);
+    }
+
+    ff_mutex_unlock(&mov->exmg_queue_lock);
+
+    av_log(mov, AV_LOG_VERBOSE,
+        "Pushed message on queue with timestamp: %f for track-id %d of type: %s\n",
+        media_time_secs,
+        track->track_id,
+        av_get_media_type_string(track->par->codec_type));
+
+    #if 0
+    exmg_mqtt_queue_pop(mov);
+    #endif
 
     #if 0
     mov_write_exmg_tag(pb, mov);
@@ -4786,8 +4804,8 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
 
     #if 1
     if (mov->exmg_key_system_mqtt_enabled || getenv("FF_EXMG_KEYS_MQTT") != NULL) {
-        av_log(mov, AV_LOG_VERBOSE, "EXMG key system enabled, DASH MOOF with %d tracks, and %ld bytes of mdat\n", tracks, mdat_size);
-        exmg_mqtt_queue_push(mov, tracks, mdat_size);
+        //av_log(mov, AV_LOG_VERBOSE, "EXMG key system enabled, DASH MOOF with %d tracks, and %ld bytes of mdat\n", tracks, mdat_size);
+        exmg_mqtt_queue_push(mov, mov->nb_streams, mdat_size);
     }
     #endif
 
@@ -6355,9 +6373,10 @@ static int mov_init(AVFormatContext *s)
         return AVERROR(ENOMEM);
 
     mov->exmg_key_id_counter = 0;
+    mov->exmg_key_scope_pts = -1;
     mov->exmg_messages_queue_push_idx = 0;
     mov->exmg_messages_queue_pop_idx = -1;
-    
+
     memset(&mov->exmg_messages_queue, 0, sizeof(mov->exmg_messages_queue));
 
     pthread_create(&mov->exmg_queue_worker, NULL, exmg_mqtt_client_worker, mov);
@@ -7239,7 +7258,7 @@ static void exmg_mqtt_client_worker(MOVMuxContext* mov)
         //av_log(mov, AV_LOG_VERBOSE, "EXMG MQTT client worker job\n");
         exmg_mqtt_queue_pop(mov);
         // reschedule
-        av_usleep(20000);
+        av_usleep((EXMG_MESSAGE_KEY_SCOPE_DURATION_SECONDS / 2.0f) * 1000000);
     }
 }
 

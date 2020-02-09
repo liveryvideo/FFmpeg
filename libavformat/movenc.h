@@ -233,8 +233,12 @@ typedef struct MOVMuxContext {
     int encryption_kid_len;
 
     uint32_t exmg_key_id_counter;
+    int64_t exmg_key_scope_pts;
+    uint32_t exmg_key;
+    // TODO: use one array of data struct instead of many arrays here
     char *exmg_messages_queue[EXMG_MESSAGE_QUEUE_SIZE]; // can't be more than MAX_INT32
     int64_t exmg_messages_queue_media_time[EXMG_MESSAGE_QUEUE_SIZE];
+    int32_t exmg_messages_queue_media_key[EXMG_MESSAGE_QUEUE_SIZE];
     int32_t exmg_messages_queue_push_idx;
     int32_t exmg_messages_queue_pop_idx;
 
