@@ -53,6 +53,7 @@
 #include "libavutil/timecode.h"
 #include "libavutil/color_utils.h"
 #include "libavutil/time.h"
+#include "libavutil/aes_ctr.h"
 #include "hevc.h"
 #include "rtpenc.h"
 #include "mov_chan.h"
@@ -4691,6 +4692,10 @@ static void exmg_mqtt_queue_pop(MOVMuxContext *mov)
     }
 }
 
+static void exmg_store_key_and_iv(MOVMuxContext *mov) {
+    // TODO: generate proper 16-byte length key
+}
+
 static void exmg_mqtt_queue_push(MOVMuxContext *mov, int tracks, int64_t mdat_size)
 {
     if (mov->flags & FF_MOV_FLAG_DASH == 0) {
@@ -4720,12 +4725,18 @@ static void exmg_mqtt_queue_push(MOVMuxContext *mov, int tracks, int64_t mdat_si
     // update key scoping pts
     mov->exmg_key_scope_pts = track->frag_start;
 
-    char *mqtt_message_buffer = malloc(EXMG_MESSAGE_BUFFER_SIZE * sizeof(char)); // free'd after having been pop'd from queue and sent
-    unsigned int media_encrypt_key = (int) roundf((float) 0xFFFFFFFF * ((float) rand() / (float) RAND_MAX));
+    // alloc message buffer (free'd after having been pop'd from queue and sent)
+    char *mqtt_message_buffer = malloc(EXMG_MESSAGE_BUFFER_SIZE * sizeof(char)); 
+
+    //generate key & IV: scale random int to ensured 32 bits
+    uint32_t media_encrypt_key = (uint32_t) roundf((float) UINT32_MAX * ((float) rand() / (float) RAND_MAX)); 
+    uint32_t media_encrypt_iv = (uint32_t) roundf((float) UINT32_MAX * ((float) rand() / (float) RAND_MAX));
 
     // write message data
     snprintf(mqtt_message_buffer, EXMG_MESSAGE_BUFFER_SIZE,
-        "{creation_time: %ld, exmg_track_fragment_info: {track_id: %d, media_time_in_seconds: %f, first_pts: %ld, timescale: %u, codec_id: %d, codec_type: '%s', bitrate: %ld}, exmg_key_id: %d, exmg_key: %u}",
+        "{creation_time: %ld, exmg_track_fragment_info: {track_id: %d, media_time_in_seconds: %f, \
+        first_pts: %ld, timescale: %u, codec_id: %d, codec_type: '%s', bitrate: %ld}, exmg_key_id: %d, \
+        exmg_key: %u, exmg_iv: %u}",
         av_gettime(),
         track->track_id,
         media_time_secs,
@@ -4735,11 +4746,18 @@ static void exmg_mqtt_queue_push(MOVMuxContext *mov, int tracks, int64_t mdat_si
         av_get_media_type_string(track->par->codec_type),
         track->par->bit_rate,
         mov->exmg_key_id_counter,
-        media_encrypt_key
+        media_encrypt_key,
+        media_encrypt_iv
     );
-    // update counter and key storage
+
+    // update key-id counter and key/iv storage
     mov->exmg_key_id_counter++;
-    mov->exmg_key = media_encrypt_key;
+
+    // for now we zero pad and use only a "short" 4-byte key & IVs
+    memset(mov->exmg_aes_key, 0, sizeof(mov->exmg_aes_key));
+    memcpy(mov->exmg_aes_key, &media_encrypt_key, sizeof(media_encrypt_key));
+    memset(mov->exmg_aes_iv, 0, sizeof(mov->exmg_aes_iv));
+    memcpy(mov->exmg_aes_iv, &media_encrypt_iv, sizeof(media_encrypt_iv));
 
     // push the message for this fragment on the queue
     ff_mutex_lock(&mov->exmg_queue_lock);
@@ -5171,6 +5189,18 @@ static int mov_flush_fragment_interleaving(AVFormatContext *s, MOVTrack *track)
     return 0;
 }
 
+static void exmg_encrypt_buffer_aes_ctr(MOVMuxContext *mov, uint8_t *buf, int size) {
+    struct AVAESCTR *aes_ctx = av_aes_ctr_alloc();
+    av_aes_ctr_init(aes_ctx, &mov->exmg_aes_key);
+    //av_aes_ctr_set_random_iv(aes_ctx);
+    av_aes_ctr_set_iv(aes_ctx, &mov->exmg_aes_iv);
+    uint8_t *src_buf = malloc(size);
+    memcpy(src_buf, buf, size);
+    av_aes_ctr_crypt(aes_ctx, buf, src_buf, size);
+    free(src_buf);
+    av_aes_ctr_free(aes_ctx);
+}
+
 static int mov_flush_fragment(AVFormatContext *s, int force)
 {
     //av_log(s, AV_LOG_VERBOSE, "Flushing media fragment\n");
@@ -5264,6 +5294,11 @@ static int mov_flush_fragment(AVFormatContext *s, int force)
 
         buf_size = avio_close_dyn_buf(mov->mdat_buf, &buf);
         mov->mdat_buf = NULL;
+
+        #if 0
+        exmg_encrypt_buffer_aes_ctr(mov, buf, buf_size);
+        #endif
+
         avio_wb32(s->pb, buf_size + 8);
         ffio_wfourcc(s->pb, "mdat");
         avio_write(s->pb, buf, buf_size);
