@@ -4734,9 +4734,9 @@ static void exmg_mqtt_queue_push(MOVMuxContext *mov, int tracks, int64_t mdat_si
 
     // write message data
     snprintf(mqtt_message_buffer, EXMG_MESSAGE_BUFFER_SIZE,
-        "{creation_time: %ld, exmg_track_fragment_info: {track_id: %d, media_time_in_seconds: %f, \
-        first_pts: %ld, timescale: %u, codec_id: %d, codec_type: '%s', bitrate: %ld}, exmg_key_id: %d, \
-        exmg_key: %u, exmg_iv: %u}",
+        "{\"creation_time\": %ld, \"exmg_track_fragment_info\": {\"track_id\": %d, \"media_time_in_seconds\": %f, \
+        \"first_pts\": %ld, \"timescale\": %u, \"codec_id\": %d, \"codec_type\": \"%s\", \"bitrate\": %ld}, \"exmg_key_id\": %d, \
+        \"exmg_key\": %u, \"exmg_iv\": %u}",
         av_gettime(),
         track->track_id,
         media_time_secs,
@@ -5192,7 +5192,6 @@ static int mov_flush_fragment_interleaving(AVFormatContext *s, MOVTrack *track)
 static void exmg_encrypt_buffer_aes_ctr(MOVMuxContext *mov, uint8_t *buf, int size) {
     struct AVAESCTR *aes_ctx = av_aes_ctr_alloc();
     av_aes_ctr_init(aes_ctx, &mov->exmg_aes_key);
-    //av_aes_ctr_set_random_iv(aes_ctx);
     av_aes_ctr_set_iv(aes_ctx, &mov->exmg_aes_iv);
     uint8_t *src_buf = malloc(size);
     memcpy(src_buf, buf, size);
