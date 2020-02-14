@@ -708,6 +708,7 @@ extern AVCodec ff_libshine_encoder;
 extern AVCodec ff_libspeex_encoder;
 extern AVCodec ff_libspeex_decoder;
 extern AVCodec ff_libsvt_hevc_encoder;
+extern AVCodec ff_libsvt_vp9_encoder;
 extern AVCodec ff_libtheora_encoder;
 extern AVCodec ff_libtwolame_encoder;
 extern AVCodec ff_libvo_amrwbenc_encoder;

@@ -5624,7 +5624,43 @@ static int mov_write_single_packet(AVFormatContext *s, AVPacket *pkt)
             }
         }
 
-        return ff_mov_write_packet(s, pkt);
+        if (pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_ON) {
+            uint8_t *saved_data = pkt->data;
+            int      saved_size = pkt->size;
+            int64_t  saved_pts  = pkt->pts;
+
+            // Main frame
+            pkt->data = saved_data;
+            pkt->size = saved_size - 4;
+            pkt->pts = saved_pts;
+            ret = ff_mov_write_packet(s, pkt);
+
+            // Latter 4 one-byte repeated frames
+            pkt->data = saved_data + saved_size - 4;
+            pkt->size = 1;
+            pkt->pts = saved_pts - 2;
+            ret = ff_mov_write_packet(s, pkt);
+
+            pkt->data = saved_data + saved_size - 3;
+            pkt->size = 1;
+            pkt->pts = saved_pts - 1;
+            ret = ff_mov_write_packet(s, pkt);
+
+            pkt->data = saved_data + saved_size - 2;
+            pkt->size = 1;
+            pkt->pts = saved_pts;
+            ret = ff_mov_write_packet(s, pkt);
+
+            pkt->data = saved_data + saved_size - 1;
+            pkt->size = 1;
+            pkt->pts = saved_pts + 1;
+            ret = ff_mov_write_packet(s, pkt);
+        }
+        else{
+            ret = ff_mov_write_packet(s, pkt);
+        }
+
+        return ret;
 }
 
 static int mov_write_subtitle_end_packet(AVFormatContext *s,
@@ -6762,6 +6798,10 @@ static int mov_check_bitstream(struct AVFormatContext *s, const AVPacket *pkt)
 {
     int ret = 1;
     AVStream *st = s->streams[pkt->stream_index];
+
+    if ((pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_ON) ||
+        (pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_OFF))
+        return 0;
 
     if (st->codecpar->codec_id == AV_CODEC_ID_AAC) {
         if (pkt->size > 2 && (AV_RB16(pkt->data) & 0xfff0) == 0xfff0)

@@ -161,6 +161,9 @@ typedef struct MatroskaMuxContext {
     int64_t *stream_duration_offsets;
 
     int allow_raw_vfw;
+
+    int simple_block_timecode;
+    int accumulated_cluster_timecode;
 } MatroskaMuxContext;
 
 /** 2 bytes * 7 for EBML IDs, 7 1-byte EBML lengths, 6 1-byte uint,
@@ -2180,7 +2183,13 @@ static void mkv_write_block(AVFormatContext *s, AVIOContext *pb,
     put_ebml_num(pb, size + 4, 0);
     // this assumes stream_index is less than 126
     avio_w8(pb, 0x80 | track_number);
-    avio_wb16(pb, ts - mkv->cluster_pts);
+
+    if ((pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_ON) ||
+            (pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_OFF))
+        avio_wb16(pb, mkv->simple_block_timecode);
+    else
+        avio_wb16(pb, ts - mkv->cluster_pts);
+
     avio_w8(pb, (blockid == MATROSKA_ID_SIMPLEBLOCK && keyframe) ? (1 << 7) : 0);
     avio_write(pb, data + offset, size);
     if (data != pkt->data)
@@ -2386,6 +2395,8 @@ static int mkv_write_packet_internal(AVFormatContext *s, AVPacket *pkt, int add_
     int64_t ts = mkv->tracks[pkt->stream_index].write_dts ? pkt->dts : pkt->pts;
     int64_t relative_packet_pos;
     int dash_tracknum = mkv->is_dash ? mkv->dash_track_number : pkt->stream_index + 1;
+    double fps = 0;
+    int pts_interval = 0;
 
     if (ts == AV_NOPTS_VALUE) {
         av_log(s, AV_LOG_ERROR, "Can't write packet with unknown timestamp\n");
@@ -2401,12 +2412,23 @@ static int mkv_write_packet_internal(AVFormatContext *s, AVPacket *pkt, int add_
         }
     }
 
+    if ((pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_ON) || (pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_OFF)) {
+        fps = av_q2d(s->streams[pkt->stream_index]->avg_frame_rate);
+        pts_interval = 1000 / fps;
+    }
+
     if (mkv->cluster_pos == -1) {
         mkv->cluster_pos = avio_tell(s->pb);
         ret = start_ebml_master_crc32(s->pb, &mkv->cluster_bc, mkv, MATROSKA_ID_CLUSTER);
         if (ret < 0)
             return ret;
-        put_ebml_uint(mkv->cluster_bc, MATROSKA_ID_CLUSTERTIMECODE, FFMAX(0, ts));
+
+        if ((pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_ON) || (pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_OFF))
+            put_ebml_uint(mkv->cluster_bc, MATROSKA_ID_CLUSTERTIMECODE,
+                    mkv->accumulated_cluster_timecode + pts_interval);
+        else
+            put_ebml_uint(mkv->cluster_bc, MATROSKA_ID_CLUSTERTIMECODE, FFMAX(0, ts));
+
         mkv->cluster_pts = FFMAX(0, ts);
     }
     pb = mkv->cluster_bc;
@@ -2414,7 +2436,67 @@ static int mkv_write_packet_internal(AVFormatContext *s, AVPacket *pkt, int add_
     relative_packet_pos = avio_tell(pb);
 
     if (par->codec_type != AVMEDIA_TYPE_SUBTITLE) {
-        mkv_write_block(s, pb, MATROSKA_ID_SIMPLEBLOCK, pkt, keyframe);
+        if (pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_ON) {
+            uint8_t *saved_data = pkt->data;
+            int saved_size = pkt->size;
+            int64_t saved_pts = pkt->pts;
+            // Main frame
+            pkt->data = saved_data;
+            pkt->size = saved_size - 4;
+            pkt->pts = saved_pts;
+            mkv_write_block(s, pb, MATROSKA_ID_SIMPLEBLOCK, pkt, keyframe);
+
+            // Latter 4 one-byte repeated frames
+            pkt->data = saved_data + saved_size - 4;
+            pkt->size = 1;
+            pkt->pts = saved_pts - 2;
+            mkv_write_block(s, pb, MATROSKA_ID_SIMPLEBLOCK, pkt, keyframe);
+            mkv->simple_block_timecode += pts_interval;
+
+            pkt->data = saved_data + saved_size - 3;
+            pkt->size = 1;
+            pkt->pts = saved_pts - 1;
+            mkv_write_block(s, pb, MATROSKA_ID_SIMPLEBLOCK, pkt, keyframe);
+            mkv->simple_block_timecode += pts_interval;
+
+            pkt->data = saved_data + saved_size - 2;
+            pkt->size = 1;
+            pkt->pts = saved_pts;
+            mkv_write_block(s, pb, MATROSKA_ID_SIMPLEBLOCK, pkt, keyframe);
+            mkv->simple_block_timecode += pts_interval;
+
+            pkt->data = saved_data + saved_size - 1;
+            pkt->size = 1;
+            pkt->pts = saved_pts + 1;
+            mkv_write_block(s, pb, MATROSKA_ID_SIMPLEBLOCK, pkt, keyframe);
+            mkv->simple_block_timecode += pts_interval;
+        } else {
+            mkv_write_block(s, pb, MATROSKA_ID_SIMPLEBLOCK, pkt, keyframe);
+
+            if (pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_OFF) {
+                GetBitContext gb;
+                int invisible, profile;
+
+                if ((ret = init_get_bits8(&gb, pkt->data, pkt->size)) < 0)
+                    return ret;
+
+                get_bits(&gb, 2); // frame marker
+                profile  = get_bits1(&gb);
+                profile |= get_bits1(&gb) << 1;
+                if (profile == 3) profile += get_bits1(&gb);
+
+                if (get_bits1(&gb)) {
+                    invisible = 0;
+                } else {
+                    get_bits1(&gb); // keyframe
+                    invisible = !get_bits1(&gb);
+                }
+
+                if (!invisible)
+                    mkv->simple_block_timecode += pts_interval;
+            }
+        }
+
         if ((s->pb->seekable & AVIO_SEEKABLE_NORMAL) && (par->codec_type == AVMEDIA_TYPE_VIDEO && keyframe || add_cue)) {
             ret = mkv_add_cuepoint(mkv->cues, pkt->stream_index, dash_tracknum, ts, mkv->cluster_pos, relative_packet_pos, -1);
             if (ret < 0) return ret;
@@ -2473,8 +2555,13 @@ static int mkv_write_packet(AVFormatContext *s, AVPacket *pkt)
 
     if (mkv->tracks[pkt->stream_index].write_dts)
         cluster_time = pkt->dts - mkv->cluster_pts;
-    else
-        cluster_time = pkt->pts - mkv->cluster_pts;
+    else {
+        if ((pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_ON) ||
+                (pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_OFF))
+            cluster_time = mkv->accumulated_cluster_timecode - mkv->cluster_pts;
+        else
+            cluster_time = pkt->pts - mkv->cluster_pts;
+    }
     cluster_time += mkv->tracks[pkt->stream_index].ts_offset;
 
     // start a new cluster every 5 MB or 5 sec, or 32k / 1 sec for streaming or
@@ -2502,6 +2589,13 @@ static int mkv_write_packet(AVFormatContext *s, AVPacket *pkt)
     }
 
     if (mkv->cluster_pos != -1 && start_new_cluster) {
+        if ((pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_ON) ||
+                (pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_OFF)) {
+            // Reset Timecode for new cluster.
+            mkv->accumulated_cluster_timecode += mkv->simple_block_timecode;
+            mkv->simple_block_timecode = 0;
+        }
+
         mkv_start_new_cluster(s, pkt);
     }
 
@@ -2735,6 +2829,10 @@ static int mkv_check_bitstream(struct AVFormatContext *s, const AVPacket *pkt)
 {
     int ret = 1;
     AVStream *st = s->streams[pkt->stream_index];
+
+    if ((pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_ON) ||
+       (pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_OFF))
+        return 0;
 
     if (st->codecpar->codec_id == AV_CODEC_ID_AAC) {
         if (pkt->size > 2 && (AV_RB16(pkt->data) & 0xfff0) == 0xfff0)

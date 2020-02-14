@@ -63,9 +63,33 @@ static int ivf_write_packet(AVFormatContext *s, AVPacket *pkt)
     AVIOContext *pb = s->pb;
     IVFEncContext *ctx = s->priv_data;
 
-    avio_wl32(pb, pkt->size);
-    avio_wl64(pb, pkt->pts);
-    avio_write(pb, pkt->data, pkt->size);
+    if (pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_ON) {
+        avio_wl32(pb, pkt->size - 4);
+        avio_wl64(pb, pkt->pts);
+        avio_write(pb, pkt->data, pkt->size - 4);
+
+        avio_wl32(pb, 1);
+        avio_wl64(pb, pkt->pts - 2);
+        avio_write(pb, pkt->data + pkt->size - 4, 1);
+
+        avio_wl32(pb, 1);
+        avio_wl64(pb, pkt->pts - 1);
+        avio_write(pb, pkt->data + pkt->size - 3, 1);
+
+        avio_wl32(pb, 1);
+        avio_wl64(pb, pkt->pts);
+        avio_write(pb, pkt->data + pkt->size - 2, 1);
+
+        avio_wl32(pb, 1);
+        avio_wl64(pb, pkt->pts + 1);
+        avio_write(pb, pkt->data + pkt->size - 1, 1);
+    }
+    else {
+        avio_wl32(pb, pkt->size);
+        avio_wl64(pb, pkt->pts);
+        avio_write(pb, pkt->data, pkt->size);
+    }
+
     if (ctx->frame_cnt)
         ctx->sum_delta_pts += pkt->pts - ctx->last_pts;
     ctx->frame_cnt++;
@@ -94,6 +118,10 @@ static int ivf_check_bitstream(struct AVFormatContext *s, const AVPacket *pkt)
 {
     int ret = 1;
     AVStream *st = s->streams[pkt->stream_index];
+
+    if ((pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_ON) ||
+       (pkt->flags & AV_PKT_FLAG_SVT_VP9_EXT_OFF))
+        return 0;
 
     if (st->codecpar->codec_id == AV_CODEC_ID_VP9)
         ret = ff_stream_add_bitstream_filter(st, "vp9_superframe", NULL);

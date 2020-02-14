@@ -265,6 +265,7 @@ External library support:
   --enable-libsrt          enable Haivision SRT protocol via libsrt [no]
   --enable-libssh          enable SFTP protocol via libssh [no]
   --enable-libsvthevc      enable HEVC encoding via svt [no]
+  --enable-libsvtvp9       enable VP9 encoding via svt [no]
   --enable-libtensorflow   enable TensorFlow as a DNN module backend
                            for DNN based filters like sr [no]
   --enable-libtesseract    enable Tesseract, needed for ocr filter [no]
@@ -1795,6 +1796,7 @@ EXTERNAL_LIBRARY_LIST="
     libsrt
     libssh
     libsvthevc
+    libsvtvp9
     libtensorflow
     libtesseract
     libtheora
@@ -3197,6 +3199,7 @@ libspeex_decoder_deps="libspeex"
 libspeex_encoder_deps="libspeex"
 libspeex_encoder_select="audio_frame_queue"
 libsvt_hevc_encoder_deps="libsvthevc"
+libsvt_vp9_encoder_deps="libsvtvp9"
 libtheora_encoder_deps="libtheora"
 libtwolame_encoder_deps="libtwolame"
 libvo_amrwbenc_encoder_deps="libvo_amrwbenc"
@@ -6273,6 +6276,7 @@ enabled libssh            && require_pkg_config libssh libssh libssh/sftp.h sftp
 enabled libspeex          && require_pkg_config libspeex speex speex/speex.h speex_decoder_init
 enabled libsrt            && require_pkg_config libsrt "srt >= 1.3.0" srt/srt.h srt_socket
 enabled libsvthevc        && require_pkg_config libsvthevc SvtHevcEnc EbApi.h EbInitHandle
+enabled libsvtvp9         && require_pkg_config libsvtvp9 SvtVp9Enc EbSvtVp9Enc.h eb_vp9_svt_init_handle
 enabled libtensorflow     && require libtensorflow tensorflow/c/c_api.h TF_Version -ltensorflow
 enabled libtesseract      && require_pkg_config libtesseract tesseract tesseract/capi.h TessBaseAPICreate
 enabled libtheora         && require libtheora theora/theoraenc.h th_info_init -ltheoraenc -ltheoradec -logg
