@@ -986,6 +986,12 @@ static void do_audio_out(OutputFile *of, OutputStream *ost,
                    av_ts2str(pkt.dts), av_ts2timestr(pkt.dts, &enc->time_base));
         }
 
+        //LLS-79 LLS-186 Store time data retrieved from frame side_data in packet side_data
+        AVDictionaryEntry *timeEntry = av_dict_get(frame->metadata, "init_time", NULL, 0);
+        if (timeEntry) {
+            addSideDataS(&pkt, "init_time", timeEntry->value);
+        }
+
         output_packet(of, &pkt, ost, 0);
     }
 

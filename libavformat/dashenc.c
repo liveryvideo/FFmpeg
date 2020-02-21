@@ -762,10 +762,9 @@ static void write_time(AVIOContext *out, int64_t time)
     avio_printf(out, "%d.%dS", seconds, fractions / (AV_TIME_BASE / 10));
 }
 
-static void format_date_now(char *buf, int size)
+static void format_date(char *buf, int size, int64_t time_us)
 {
     struct tm *ptm, tmbuf;
-    int64_t time_us = av_gettime();
     int64_t time_ms = time_us / 1000;
     const time_t time_s = time_ms / 1000;
     int millisec = time_ms - (time_s * 1000);
@@ -779,6 +778,12 @@ static void format_date_now(char *buf, int size)
         len = strlen(buf);
         snprintf(buf + len, size - len, ".%03dZ", millisec);
     }
+}
+
+static void format_date_now(char *buf, int size)
+{
+    int64_t time_us = av_gettime();
+    format_date(buf, size, time_us);
 }
 
 static int write_adaptation_set(AVFormatContext *s, AVIOContext *out, int as_index,
@@ -1784,36 +1789,52 @@ static int dash_flush(AVFormatContext *s, int final, int stream)
 }
 
 /**
+ * Return the timestamp (in microseconds) that was added when the frame has entered FFmpeg.
+ */
+static int64_t get_init_time(AVPacket *pkt) {
+    int size;
+    const uint8_t *side_data;
+    AVDictionary *dict;
+    AVDictionaryEntry* timeEntry;
+
+    side_data = av_packet_get_side_data(pkt, AV_PKT_DATA_STRINGS_METADATA, &size);
+    if (!side_data || !size) {
+        return -1;
+    }
+
+    dict = NULL;
+    if (av_packet_unpack_dictionary(side_data, size, &dict) < 0) {
+        return -2;
+    }
+
+    timeEntry = av_dict_get(dict, "init_time", NULL, 0);
+    if (timeEntry) {
+        long init_time = strtol(timeEntry->value, NULL, 10);
+        av_dict_free(&dict);
+        return init_time;
+    }
+
+    av_dict_free(&dict);
+    return -3;
+}
+
+/**
  * Print statistics to the log.
  * LLS-79
  */
 static void print_stats(DASHContext *c, OutputStream *os, AVPacket *pkt)
 {
-    int size;
-    const uint8_t *side_data;
+    int64_t curr_time;
+    int64_t pTime;
+    int64_t pkt_init_time = get_init_time(pkt);
+    if (pkt_init_time >= 0) {
+        //av_gettime_relative is in microseconds
+        curr_time = av_gettime_relative();
+        pTime = (curr_time - pkt_init_time) / 1000;
 
-    side_data = av_packet_get_side_data(pkt, AV_PKT_DATA_STRINGS_METADATA, &size);
-    if (side_data && size) {
-        AVDictionary *dict = NULL;
-        if (av_packet_unpack_dictionary(side_data, size, &dict) >= 0) {
-            AVDictionaryEntry* timeEntry = av_dict_get(dict, "init_time", NULL, 0);
-            if (timeEntry) {
-                int64_t pkt_init_time = strtol(timeEntry->value, NULL, 10);
-
-                //av_gettime_relative is in microseconds
-                int64_t curr_time = av_gettime_relative();
-                int64_t pTime = (curr_time - pkt_init_time) / 1000;
-
-                print_time_stats(c->time_stats, pTime);
-            } else {
-                av_log(c, AV_LOG_INFO, "missing packet time 1\n");
-            }
-
-        } else {
-            av_log(c, AV_LOG_INFO, "missing packet time 2\n");
-        }
-
-        av_dict_free(&dict);
+        print_time_stats(c->time_stats, pTime);
+    } else {
+        av_log(c, AV_LOG_INFO, "missing packet time ret: %"PRId64", codec: %s\n", pkt_init_time, os->codec_str);
     }
 
     print_total_stats(os->bitrate_stats, pkt->size);
@@ -1854,10 +1875,30 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
     os->last_pts = pkt->pts;
 
     if (!c->availability_start_time[0]) {
-        int64_t start_time_us = av_gettime();
-        c->start_time_s = start_time_us / 1000000;
-        format_date_now(c->availability_start_time,
-                        sizeof(c->availability_start_time));
+        char orig_availability_start_time[100];
+        int64_t rel_init_time;
+        int64_t curr_time = av_gettime();
+        int64_t init_start_time;
+        c->start_time_s = curr_time / 1000000;
+
+        av_log(s, AV_LOG_INFO, "----------------------------------------\n");
+        rel_init_time = get_init_time(pkt);
+        if (rel_init_time <= 0) {
+            av_log(s, AV_LOG_INFO, "Init time of pkt = 0, codec: %s\n", os->codec_str);
+        } else {
+            int64_t rel_time = av_gettime_relative();
+            init_start_time = curr_time - (rel_time - rel_init_time);
+        }
+
+        format_date(c->availability_start_time,
+                    sizeof(c->availability_start_time),
+                    init_start_time);
+
+        format_date_now(orig_availability_start_time,
+                        sizeof(orig_availability_start_time));
+        av_log(s, AV_LOG_INFO, "availabilityStartTime=\"%s\"\n", c->availability_start_time);
+        av_log(s, AV_LOG_INFO, "orig availabilityStartTime=\"%s\"\n", orig_availability_start_time);
+        av_log(s, AV_LOG_INFO, "----------------------------------------\n");
     }
 
     if (!os->availability_time_offset && pkt->duration) {
