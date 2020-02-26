@@ -28,6 +28,8 @@
 #define EXMG_MQTT_VERSION MQTTVERSION_3_1_1
 //*/
 
+#define EXMG_KEY_MESSAGE_FILENAME_DIR "../dash-out-test/"
+
 // TODO: struct of our state inside MOVMuxContext
 
 static int exmg_mqtt_client_connect(MQTTClient *client)
@@ -136,7 +138,7 @@ static int exmg_mqtt_client_send(char* message)
     return result;
 }
 
-static int exmg_write_key_file(char *filename, char *message)
+static int exmg_write_key_file(const char *filename, const char *message)
 {
     av_log(NULL, AV_LOG_VERBOSE, "exmg_write_key_file: %s\n", filename);
     FILE *f = fopen(filename, "w");
@@ -148,6 +150,34 @@ static int exmg_write_key_file(char *filename, char *message)
     fprintf(f, "%s", message);
     fclose(f);
     return 1;
+}
+
+static void exmg_write_key_message(const char* message_buffer, MOVTrack* track, int64_t message_media_time) {
+    static const char* template = "exmg_key_%s_%d_%ld.json";
+
+    char *filename_template = malloc(strlen(EXMG_KEY_MESSAGE_FILENAME_DIR) + strlen(template) + 1);
+    strcpy(filename_template, EXMG_KEY_MESSAGE_FILENAME_DIR);
+    strcat(filename_template, template);
+
+    int filename_len = strlen(filename_template) + 256;
+    char *filename = malloc(filename_len + 1);
+    int res = snprintf(filename, filename_len, filename_template, 
+        av_get_media_type_string(track->par->codec_type),
+        track->track_id,
+        message_media_time
+    );
+    free(filename_template);
+    if (res <= 0 || res >= filename_len){
+        av_log(NULL, AV_LOG_ERROR, "Fatal error writing string, snprintf result value: %d\n", res);
+        exit(1);
+    }
+
+    res = exmg_write_key_file(filename, message_buffer);
+    free(filename);
+    if (!res) {
+        av_log(NULL, AV_LOG_ERROR, "Fatal error writing key-message!\n");
+        exit(1);
+    }
 }
 
 static void exmg_mqtt_queue_pop(MOVMuxContext *mov)
@@ -191,14 +221,8 @@ static void exmg_mqtt_queue_pop(MOVMuxContext *mov)
 
             //exmg_mqtt_client_send(message_buffer);
 
-            char filename[512];
-            snprintf(filename, sizeof(filename), "../dash-out-test/exmg_key_%s_%d_%ld.json", 
-                av_get_media_type_string(track->par->codec_type),
-                track->track_id,
-                message_media_time
-            );
-
-            exmg_write_key_file(filename, message_buffer);
+            // we need the track info to create a unique indexable filename 
+            exmg_write_key_message(message_buffer, track, message_media_time);
 
         } else {
             av_log(mov, AV_LOG_VERBOSE, "EXMG key-system dry-run, not sending.");
@@ -253,7 +277,7 @@ static void exmg_mqtt_queue_push(MOVMuxContext *mov, int tracks, int64_t mdat_si
     uint32_t media_encrypt_iv = (uint32_t) roundf((float) UINT32_MAX * ((float) rand() / (float) RAND_MAX));
 
     // write message data
-    snprintf(message_buffer, EXMG_MESSAGE_BUFFER_SIZE,
+    int printf_res = snprintf(message_buffer, EXMG_MESSAGE_BUFFER_SIZE,
         "{\"creation_time\": %ld, \"exmg_track_fragment_info\": {\"track_id\": %d, \"media_time_in_seconds\": %f, \
         \"first_pts\": %ld, \"timescale\": %u, \"codec_id\": %d, \"codec_type\": \"%s\", \"bitrate\": %ld}, \"exmg_key_id\": %d, \
         \"exmg_key\": %u, \"exmg_iv\": %u}",
@@ -269,6 +293,11 @@ static void exmg_mqtt_queue_push(MOVMuxContext *mov, int tracks, int64_t mdat_si
         media_encrypt_key,
         media_encrypt_iv
     );
+
+    if (printf_res <= 0 || printf_res >= EXMG_MESSAGE_BUFFER_SIZE) {
+        av_log(mov, AV_LOG_ERROR, "Fatal error writing string, snprintf result value: %d", printf_res);
+        exit(1);
+    }
 
     // update key-id counter and key/iv storage
     mov->exmg_key_id_counter++;
