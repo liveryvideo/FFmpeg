@@ -4622,13 +4622,15 @@ static int mov_write_prft_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks)
 
 static int mov_write_exmg_tag(AVIOContext *pb, MOVMuxContext *mov)
 {
+    ExmgKeySystemEncryptSession *session = mov->exmg_key_sys;
+
     av_log(mov, AV_LOG_VERBOSE, "Writing EXMG tag\n");
 
     int64_t pos = avio_tell(pb);
 
     avio_wb32(pb, 0);                           // Size place holder
     ffio_wfourcc(pb, "exmg");                   // Type
-    avio_wb32(pb, mov->exmg_key_id_counter++);          // ExMg key ID
+    avio_wb32(pb, session->exmg_key_id_counter++);          // ExMg key ID
     // TODO add mapping of Frame-Ranges/Key-IDs inside segment
     return update_size(pb, pos);
 }
@@ -4654,7 +4656,7 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
     #if 1
     if (mov->exmg_key_system_mqtt_enabled || getenv("FF_EXMG_KEYS_MQTT") != NULL) {
         //av_log(mov, AV_LOG_VERBOSE, "EXMG key system enabled, DASH MOOF with %d tracks, and %ld bytes of mdat\n", tracks, mdat_size);
-        exmg_mqtt_queue_push(mov, mov->nb_streams, mdat_size);
+        exmg_key_message_queue_push(mov, mov->nb_streams, mdat_size);
     }
     #endif
 
@@ -6226,16 +6228,7 @@ static int mov_init(AVFormatContext *s)
     if (!mov->tracks)
         return AVERROR(ENOMEM);
 
-    mov->exmg_key_id_counter = 0;
-    mov->exmg_key_scope_pts = -1;
-    mov->exmg_messages_queue_push_idx = 0;
-    mov->exmg_messages_queue_pop_idx = -1;
-
-    memset(&mov->exmg_messages_queue, 0, sizeof(mov->exmg_messages_queue));
-
-    pthread_create(&mov->exmg_queue_worker, NULL, exmg_mqtt_client_worker, mov);
-
-    ff_mutex_init(&mov->exmg_queue_lock, NULL);
+    exmg_key_system_init(&mov->exmg_key_sys, mov);
 
     if (mov->encryption_scheme_str != NULL && strcmp(mov->encryption_scheme_str, "none") != 0) {
         if (strcmp(mov->encryption_scheme_str, "cenc-aes-ctr") == 0) {

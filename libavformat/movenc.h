@@ -180,8 +180,6 @@ typedef enum {
     MOV_PRFT_NB
 } MOVPrftBox;
 
-#define EXMG_MESSAGE_QUEUE_SIZE 0xFFFF
-
 typedef struct MOVMuxContext {
     const AVClass *av_class;
     int     mode;
@@ -232,21 +230,6 @@ typedef struct MOVMuxContext {
     uint8_t *encryption_kid;
     int encryption_kid_len;
 
-    uint32_t exmg_key_id_counter;
-    int64_t exmg_key_scope_pts;
-    uint8_t exmg_aes_key[AES_CTR_KEY_SIZE];
-    uint8_t exmg_aes_iv[AES_CTR_IV_SIZE];
-    // TODO: use one array of data struct instead of many arrays here
-    char *exmg_messages_queue[EXMG_MESSAGE_QUEUE_SIZE]; // can't be more than MAX_INT32
-    int64_t exmg_messages_queue_media_time[EXMG_MESSAGE_QUEUE_SIZE];
-    int32_t exmg_messages_queue_media_key[EXMG_MESSAGE_QUEUE_SIZE];
-    int32_t exmg_messages_queue_push_idx;
-    int32_t exmg_messages_queue_pop_idx;
-
-    pthread_mutex_t exmg_queue_lock;
-    pthread_t exmg_queue_worker;
-    pthread_cond_t exmg_queue_cond;
-
     int need_rewrite_extradata;
 
     int use_stream_ids_as_track_ids;
@@ -254,8 +237,12 @@ typedef struct MOVMuxContext {
     int write_tmcd;
     MOVPrftBox write_prft;
     int empty_hdlr_name;
+
     int exmg_key_system_mqtt_enabled;
     int exmg_key_system_mqtt_dry_run;
+
+    struct ExmgKeySystemEncryptSession *exmg_key_sys;
+
 } MOVMuxContext;
 
 #define FF_MOV_FLAG_RTP_HINT              (1 <<  0)
