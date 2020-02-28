@@ -308,11 +308,16 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
     ExmgKeySystemEncryptSession *session = mov->exmg_key_sys;
 
     MOVTrack* track = &mov->tracks[0];
+    // compute current media time
     float media_time_secs = (float) track->frag_start / (float) track->timescale;
-    float key_scope_secs =  (float) session->exmg_key_scope_pts / (float) track->timescale;
-
+    // compute key-scope boundaries
+    float key_scope_max_duration = EXMG_MESSAGE_KEY_SCOPE_DURATION_SECONDS;
+    float key_scope_start_secs =  (float) session->exmg_key_scope_pts / (float) track->timescale;
+    float key_scope_end_secs = key_scope_start_secs + key_scope_max_duration;
+    
     if (session->exmg_key_scope_pts != -1 // trivial init condition for first key
-        && media_time_secs < key_scope_secs + EXMG_MESSAGE_KEY_SCOPE_DURATION_SECONDS) {
+        && media_time_secs >= key_scope_start_secs
+        && media_time_secs < key_scope_end_secs) {
         return; // no-op, no need to push a message
     }
 
@@ -328,9 +333,9 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
 
     // write message data
     int printf_res = snprintf(message_buffer, EXMG_MESSAGE_BUFFER_SIZE,
-        "{\"creation_time\": %ld, \"exmg_track_fragment_info\": {\"track_id\": %d, \"media_time_in_seconds\": %f, \
-        \"first_pts\": %ld, \"timescale\": %u, \"codec_id\": %d, \"codec_type\": \"%s\", \"bitrate\": %ld}, \"exmg_key_id\": %d, \
-        \"exmg_key\": %u, \"exmg_iv\": %u}",
+        "{\"creation_time\": %ld, \"fragment_info\": {\"track_id\": %d, \"media_time_secs\": %f, \
+        \"first_pts\": %ld, \"timescale\": %u, \"codec_id\": %d, \"codec_type\": \"%s\", \"bitrate\": %ld}, \
+        \"key_id\": %d, \"key_max_duration_secs\": %f, \"key\": %u, \"iv\": %u}",
         av_gettime(),
         track->track_id,
         media_time_secs,
@@ -340,6 +345,7 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
         av_get_media_type_string(track->par->codec_type),
         track->par->bit_rate,
         session->exmg_key_id_counter,
+        key_scope_max_duration,
         media_encrypt_key,
         media_encrypt_iv
     );
@@ -365,6 +371,7 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
     session->exmg_messages_queue_media_key[session->exmg_messages_queue_push_idx] = media_encrypt_key;
     session->exmg_messages_queue[session->exmg_messages_queue_push_idx] = message_buffer;
     session->exmg_messages_queue_push_idx++;
+
     // handle push index overflow
     if (session->exmg_messages_queue_push_idx >= EXMG_MESSAGE_QUEUE_SIZE) {
         // catch edge condition: queue overflows without anything read yet
