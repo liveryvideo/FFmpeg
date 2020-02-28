@@ -228,8 +228,6 @@ static void exmg_write_key_message(const char* message_buffer, MOVTrack* track, 
 
 static void exmg_key_message_queue_pop(MOVMuxContext *mov)
 {
-    
-
     if (mov->nb_streams != 1) {
         av_log(mov, AV_LOG_WARNING, "Track has %d tracks, but should have exactly 1.", mov->nb_streams);
         return;
@@ -260,7 +258,7 @@ static void exmg_key_message_queue_pop(MOVMuxContext *mov)
 
     av_log(mov, AV_LOG_VERBOSE, "Next pop'able message media time: %f\n", next_popable_message_media_time);
 
-    if (time_diff >= EXMG_MESSAGE_SEND_DELAY) {
+    if (time_diff >= session->message_send_delay_secs) {
 
         av_log(mov, AV_LOG_VERBOSE, "EXMG key-message queue pop, media-time difference is: %f secs\n", time_diff);
 
@@ -426,13 +424,15 @@ static void exmg_key_message_queue_worker(MOVMuxContext* mov)
     }
 }
 
-static void exmg_key_system_init(ExmgKeySystemEncryptSession **session_ptr  , MOVMuxContext *parent) {
+static void exmg_key_system_init(ExmgKeySystemEncryptSession **session_ptr, MOVMuxContext *parent) {
     ExmgKeySystemEncryptSession *session = *session_ptr = malloc(sizeof(ExmgKeySystemEncryptSession));
     memset(session, 0, sizeof(ExmgKeySystemEncryptSession));
 
     char* message_send_delay = getenv("FF_EXMG_MESSAGE_SEND_DELAY");
     if (message_send_delay != NULL) {
         session->message_send_delay_secs = strtof(message_send_delay, NULL);
+    } else {
+        session->message_send_delay_secs = EXMG_MESSAGE_SEND_DELAY;
     }
 
     session->exmg_key_id_counter = 0;
@@ -444,4 +444,10 @@ static void exmg_key_system_init(ExmgKeySystemEncryptSession **session_ptr  , MO
 
     ff_mutex_init(&session->exmg_queue_lock, NULL);
     pthread_create(&session->exmg_queue_worker, NULL, exmg_key_message_queue_worker, parent);
+
+    av_log(parent, AV_LOG_INFO, 
+        "Initialized EMXG key-system encrypt context. Send-delay=%f [s], Key-scope-duration=%f [s]\n", 
+        session->message_send_delay_secs, 
+        session->message_key_scope_duration_secs    
+    );
 }
