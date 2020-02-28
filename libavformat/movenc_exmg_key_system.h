@@ -72,7 +72,7 @@ static int exmg_mqtt_client_connect(MQTTClient *client)
     conn_opts.password = EXMG_MQTT_PASSWD;
     conn_opts.MQTTVersion = EXMG_MQTT_VERSION;
 
-    if (strncmp(url, "ssl://", 6) == 0 
+    if (strncmp(url, "ssl://", 6) == 0
         || strncmp(url, "wss://", 6) == 0)
     {
         ssl_opts.verify = 1;
@@ -109,7 +109,7 @@ static int exmg_mqtt_client_send(char* message)
     char* url;
     char* buffer = NULL;
     const char* version = NULL;
-    
+
     char *topic = EXMG_MQTT_TOPIC;
 
     if (!message) {
@@ -188,9 +188,9 @@ static int exmg_write_key_file(const char *filename, const char *message)
 
 /**
  * Will determine exact semantic filename based on message data buffer, and given track metadata.
- * 
+ *
  * The idea is the key filename can be resolved back from an index of the metadata on either client side.
- * 
+ *
  * This function will then directly call to `exmg_write_key_file` with its result.
  */
 static void exmg_write_key_message(const char* message_buffer, MOVTrack* track, int64_t message_media_time) {
@@ -207,7 +207,7 @@ static void exmg_write_key_message(const char* message_buffer, MOVTrack* track, 
 
     int filename_len = strlen(filename_template) + 256; // we add 256 chars of leeway for the semantics we print in
     char *filename = malloc(filename_len + 1);
-    int res = snprintf(filename, filename_len, filename_template, 
+    int res = snprintf(filename, filename_len, filename_template,
         av_get_media_type_string(track->par->codec_type),
         track->track_id,
         message_media_time
@@ -269,7 +269,7 @@ static void exmg_key_message_queue_pop(MOVMuxContext *mov)
 
             //exmg_mqtt_client_send(message_buffer);
 
-            // we need the track info to create a unique indexable filename 
+            // we need the track info to create a unique indexable filename
             exmg_write_key_message(message_buffer, track, message_media_time);
 
         } else {
@@ -296,7 +296,7 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
 
     if (mov->nb_streams > 1) {
         av_log(mov, AV_LOG_ERROR, "EXMG key system does not support multiple tracks per DASH fragment! Exiting process.");
-        exit(0); // 
+        exit(0); //
         return;
     }
 
@@ -320,10 +320,10 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
     session->exmg_key_scope_pts = track->frag_start;
 
     // alloc message buffer (free'd after having been pop'd from queue and sent)
-    char *message_buffer = (char *) malloc(EXMG_MESSAGE_BUFFER_SIZE * sizeof(char)); 
+    char *message_buffer = (char *) malloc(EXMG_MESSAGE_BUFFER_SIZE * sizeof(char));
 
     //generate key & IV: scale random int to ensured 32 bits
-    uint32_t media_encrypt_key = (uint32_t) roundf((float) UINT32_MAX * ((float) rand() / (float) RAND_MAX)); 
+    uint32_t media_encrypt_key = (uint32_t) roundf((float) UINT32_MAX * ((float) rand() / (float) RAND_MAX));
     uint32_t media_encrypt_iv = (uint32_t) roundf((float) UINT32_MAX * ((float) rand() / (float) RAND_MAX));
 
     // write message data
@@ -445,9 +445,9 @@ static void exmg_key_system_init(ExmgKeySystemEncryptSession **session_ptr, MOVM
     ff_mutex_init(&session->exmg_queue_lock, NULL);
     pthread_create(&session->exmg_queue_worker, NULL, exmg_key_message_queue_worker, parent);
 
-    av_log(parent, AV_LOG_INFO, 
-        "Initialized EMXG key-system encrypt context. Send-delay=%f [s], Key-scope-duration=%f [s]\n", 
-        session->message_send_delay_secs, 
-        session->message_key_scope_duration_secs    
+    av_log(parent, AV_LOG_INFO,
+        "Initialized EMXG key-system encrypt context. Send-delay=%f [s], Key-scope-duration=%f [s]\n",
+        session->message_send_delay_secs,
+        session->message_key_scope_duration_secs
     );
 }
