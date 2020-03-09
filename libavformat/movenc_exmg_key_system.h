@@ -172,16 +172,24 @@ static int exmg_mqtt_client_send(char* message)
  * or something of the likes, in case we want to convey/store the message
  * not directly on disk or send it somewhere instead.
  */
-static int exmg_write_key_file(const char *filename, const char *message)
+static int exmg_write_key_file(const char *filename, char *data, int append)
 {
     av_log(NULL, AV_LOG_VERBOSE, "exmg_write_key_file: %s\n", filename);
-    FILE *f = fopen(filename, "w");
+
+    FILE *f;
+    if (append) {
+        f = fopen(filename, "a");
+    } else {
+        f = fopen(filename, "w");
+    }
+
     if (f == NULL)
     {
         av_log(NULL, AV_LOG_ERROR, "exmg_write_key_file: failed to open file!\n");
         return 0;
     }
-    fprintf(f, "%s", message);
+
+    fprintf(f, "%s\n", data);
     fclose(f);
     return 1;
 }
@@ -201,6 +209,13 @@ static void exmg_write_key_message(const char* message_buffer, MOVTrack* track, 
         base_dir = EXMG_KEY_MESSAGE_FILENAME_DIR;
     }
 
+    const char* media_type = av_get_media_type_string(track->par->codec_type);
+
+    char* index_path = malloc(strlen(base_dir) + 64);
+    strcpy(index_path, base_dir);
+    strcat(index_path, "exmg_key_index_");
+    strcat(index_path, media_type); // we open one file per media-index to avoid concurrent access across the various movenc instances/thread-loops
+
     char *filename_template = malloc(strlen(base_dir) + strlen(template) + 1);
     strcpy(filename_template, base_dir);
     strcat(filename_template, template);
@@ -208,22 +223,32 @@ static void exmg_write_key_message(const char* message_buffer, MOVTrack* track, 
     int filename_len = strlen(filename_template) + 256; // we add 256 chars of leeway for the semantics we print in
     char *filename = malloc(filename_len + 1);
     int res = snprintf(filename, filename_len, filename_template,
-        av_get_media_type_string(track->par->codec_type),
+        media_type,
         track->track_id,
         message_media_time
     );
+
     free(filename_template);
+
     if (res <= 0 || res >= filename_len){
         av_log(NULL, AV_LOG_ERROR, "Fatal error writing string, snprintf result value: %d\n", res);
         exit(1);
     }
 
-    res = exmg_write_key_file(filename, message_buffer);
-    free(filename);
+    res = exmg_write_key_file(filename, message_buffer, 0);
     if (!res) {
         av_log(NULL, AV_LOG_ERROR, "Fatal error writing key-message!\n");
         exit(1);
     }
+
+    res = exmg_write_key_file(index_path, filename, 1);
+    if (!res) {
+        av_log(NULL, AV_LOG_ERROR, "Fatal error writing key-message!\n");
+        exit(1);
+    }
+
+    free(index_path);
+    free(filename);
 }
 
 static void exmg_key_message_queue_pop(MOVMuxContext *mov)
