@@ -273,7 +273,7 @@ static void exmg_key_message_queue_pop(MOVMuxContext *mov)
     int64_t message_media_time = session->exmg_messages_queue_media_time[message_q_pop_index];
 
     if (message_buffer == NULL) {
-        av_log(mov, AV_LOG_VERBOSE, "No key-messages to send!\n");
+        //av_log(mov, AV_LOG_VERBOSE, "No key-messages to send!\n");
         ff_mutex_unlock(&session->exmg_queue_lock);
         return;
     }
@@ -333,10 +333,12 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
     ExmgKeySystemEncryptSession *session = mov->exmg_key_sys;
 
     MOVTrack* track = &mov->tracks[0];
+
     // compute current media time
     float media_time_secs = (float) track->frag_start / (float) track->timescale;
+
     // compute key-scope boundaries
-    float key_scope_max_duration = EXMG_MESSAGE_KEY_SCOPE_DURATION_SECONDS;
+    float key_scope_max_duration = session->message_key_scope_duration_secs;
     float key_scope_start_secs =  (float) session->exmg_key_scope_pts / (float) track->timescale;
     float key_scope_end_secs = key_scope_start_secs + key_scope_max_duration;
     
@@ -448,11 +450,13 @@ static void exmg_encrypt_buffer_aes_ctr(ExmgKeySystemEncryptSession *session, ui
 
 static void exmg_key_message_queue_worker(MOVMuxContext* mov)
 {
+    ExmgKeySystemEncryptSession *session = mov->exmg_key_sys;
+    unsigned int delay = (session->message_key_scope_duration_secs) * 1000000;
     while(1) {
-        //av_log(mov, AV_LOG_VERBOSE, "EXMG key-system worker job\n");
+        av_log(mov, AV_LOG_VERBOSE, "EXMG key-system worker job\n");
         exmg_key_message_queue_pop(mov);
         // reschedule
-        av_usleep((EXMG_MESSAGE_KEY_SCOPE_DURATION_SECONDS / 2.0f) * 1000000);
+        av_usleep(delay);
     }
 }
 
@@ -465,6 +469,13 @@ static void exmg_key_system_init(ExmgKeySystemEncryptSession **session_ptr, MOVM
         session->message_send_delay_secs = strtof(message_send_delay, NULL);
     } else {
         session->message_send_delay_secs = EXMG_MESSAGE_SEND_DELAY;
+    }
+
+    char* key_scope = getenv("FF_EXMG_MESSAGE_KEY_SCOPE_MAX");
+    if (key_scope != NULL) {
+        session->message_key_scope_duration_secs = strtof(key_scope, NULL);
+    } else {
+        session->message_key_scope_duration_secs = EXMG_MESSAGE_KEY_SCOPE_DURATION_SECONDS;
     }
 
     session->exmg_key_id_counter = 0;

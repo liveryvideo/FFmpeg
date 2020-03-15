@@ -4,10 +4,10 @@
 set -e
 
 export stream_id=664379
-export segment_size_in_seconds=6
+export segment_size_in_seconds=1
 export window_size_in_segments=20
 export window_extra_segments=31536000
-export frame_rate_num=30000
+export frame_rate_num=3000
 export frame_rate_den=1000
 export input_width=640
 export input_height=480
@@ -28,7 +28,8 @@ export output=../dash-out-test
 
 export FF_EXMG_KEY_FILE_OUT=$output/ # ending slash is mandatory (or empty string "")
 export FF_EXMG_KEYS_MQTT=1
-export FF_EXMG_MESSAGE_SEND_DELAY="5.0" # seconds
+export FF_EXMG_MESSAGE_SEND_DELAY="0.0" # seconds
+export FF_EXMG_MESSAGE_KEY_SCOPE_MAX="2"
 #export FF_EXMG_KEYS_DRY_RUN=1
 
 echo $output
@@ -52,8 +53,7 @@ echo $output
        -b:a $audio_bitrate \
        -seg_duration $segment_size_in_seconds \
        -use_timeline 0 \
-       -http_user_agent Akamai_Broadcaster_v1.0 \
-       -streaming 1 \
+       -streaming 0 \
        -index_correction 1 \
        -http_persistent 1 \
        -ignore_io_errors 1\
