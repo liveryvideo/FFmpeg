@@ -329,10 +329,7 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
         return;
     }
 
-    av_log(mov, AV_LOG_DEBUG, "Creating key-message for fragment");
-
     ExmgKeySystemEncryptSession *session = mov->exmg_key_sys;
-
     MOVTrack* track = &mov->tracks[0];
 
     // compute current media time
