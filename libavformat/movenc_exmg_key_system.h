@@ -453,7 +453,7 @@ static void exmg_key_message_queue_worker(MOVMuxContext* mov)
     ExmgKeySystemEncryptSession *session = mov->exmg_key_sys;
     unsigned int delay = (session->message_key_scope_duration_secs) * 1000000;
     while(1) {
-        av_log(mov, AV_LOG_VERBOSE, "EXMG key-system worker job\n");
+        //av_log(mov, AV_LOG_VERBOSE, "EXMG key-system worker job\n");
         exmg_key_message_queue_pop(mov);
         // reschedule
         av_usleep(delay);
