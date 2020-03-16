@@ -258,7 +258,6 @@ static void exmg_key_message_queue_pop(MOVMuxContext *mov)
     }
 
     ExmgKeySystemEncryptSession *session = mov->exmg_key_sys;
-
     MOVTrack* track = &mov->tracks[0];
 
     float media_time_secs = (float) track->frag_start / (float) track->timescale;
