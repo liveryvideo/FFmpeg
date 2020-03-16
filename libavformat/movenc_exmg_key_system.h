@@ -41,8 +41,10 @@ struct MOVMuxContext;
 
 typedef struct ExmgKeySystemEncryptSession {
     float message_send_delay_secs;
+    int fragments_per_key;
 
     uint32_t exmg_key_id_counter;
+    uint32_t exmg_key_frag_counter;
 
     uint8_t exmg_aes_key[AES_CTR_KEY_SIZE];
     uint8_t exmg_aes_iv[AES_CTR_IV_SIZE];
@@ -311,6 +313,10 @@ static void exmg_store_key_and_iv(MOVMuxContext *mov) {
     // TODO: generate proper 16-byte length key
 }
 
+/**
+ *  Gets called once per every fragment created from the movenc thread.
+ * 
+ * */
 static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t mdat_size)
 {
     if (mov->flags & FF_MOV_FLAG_DASH == 0) {
@@ -330,6 +336,15 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
 
     ExmgKeySystemEncryptSession *session = mov->exmg_key_sys;
     MOVTrack* track = &mov->tracks[0];
+
+    // reset frag-per-key counter when count done
+    if (session->exmg_key_frag_counter >= session->fragments_per_key) {
+        session->exmg_key_frag_counter = 0;
+    }
+    // run only once every frag-per-key !
+    if (session->exmg_key_frag_counter++ != 0) {
+        return;
+    }
 
     // compute current media time
     float media_time_secs = (float) track->frag_start / (float) track->timescale;
@@ -455,6 +470,18 @@ static void exmg_key_system_init(ExmgKeySystemEncryptSession **session_ptr, MOVM
         session->message_send_delay_secs = EXMG_MESSAGE_SEND_DELAY;
     }
 
+    char* fragments_per_key = getenv("FF_EXMG_KEY_SCOPE_NB_OF_FRAGMENTS");
+    if (fragments_per_key != NULL) {
+        session->fragments_per_key = atoi(fragments_per_key);
+        if (session->fragments_per_key <= 0) {
+            session->fragments_per_key = 1;
+        }
+    } else {
+        session->fragments_per_key = 1;
+    }
+
+    session->exmg_key_frag_counter = 0;
+
     session->exmg_key_id_counter = 0;
     session->exmg_messages_queue_push_idx = 0;
     session->exmg_messages_queue_pop_idx = -1;
@@ -465,7 +492,7 @@ static void exmg_key_system_init(ExmgKeySystemEncryptSession **session_ptr, MOVM
     pthread_create(&session->exmg_queue_worker, NULL, exmg_key_message_queue_worker, parent);
 
     av_log(parent, AV_LOG_INFO,
-        "Initialized EMXG key-system encrypt context. Send-delay=%f [s]\n",
-        session->message_send_delay_secs
+        "Initialized EMXG key-system encrypt context. Send-delay=%f [s]; Fragments/Key=%d\n",
+        session->message_send_delay_secs, session->fragments_per_key
     );
 }
