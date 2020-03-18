@@ -375,7 +375,7 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
     }
 
     // compute current media time
-    float media_time_secs = (float) session->key_scope_first_pts / (float) track->timescale;
+    float key_scope_start_secs = (float) session->key_scope_first_pts / (float) track->timescale;
 
     // alloc message buffer (free'd after having been pop'd from queue and sent)
     char *message_buffer = (char *) malloc(EXMG_MESSAGE_BUFFER_SIZE * sizeof(char));
@@ -386,9 +386,9 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
         \"key_id\": %d, \"key\": %u, \"iv\": %u}",
         av_gettime(),
         track->track_id,
-        media_time_secs,
-        track->frag_start,
-        frag_duration,
+        key_scope_start_secs,
+        session->key_scope_first_pts,
+        session->key_scope_duration,
         track->timescale,
         track->par->codec_id, // TODO: replace by codec_tag (4CC)
         av_get_media_type_string(track->par->codec_type),
@@ -431,8 +431,8 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
     ff_mutex_unlock(&session->queue_lock);
 
     av_log(mov, AV_LOG_VERBOSE,
-        "Pushed message on queue with timestamp: %f for track-id %d of type: %s\n",
-        media_time_secs,
+        "Pushed key-message with scope starting at: %f [s] for track-id %d of type: %s\n",
+        key_scope_start_secs,
         track->track_id,
         av_get_media_type_string(track->par->codec_type));
 
