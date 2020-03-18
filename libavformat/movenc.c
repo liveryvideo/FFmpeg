@@ -4622,15 +4622,12 @@ static int mov_write_prft_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks)
 
 static int mov_write_exmg_tag(AVIOContext *pb, MOVMuxContext *mov)
 {
-    ExmgKeySystemEncryptSession *session = mov->exmg_key_sys;
-
     av_log(mov, AV_LOG_VERBOSE, "Writing EXMG tag\n");
 
     int64_t pos = avio_tell(pb);
 
     avio_wb32(pb, 0);                           // Size place holder
     ffio_wfourcc(pb, "exmg");                   // Type
-    avio_wb32(pb, session->exmg_key_id_counter++);          // ExMg key ID
     // TODO add mapping of Frame-Ranges/Key-IDs inside segment
     return update_size(pb, pos);
 }
@@ -5115,10 +5112,6 @@ static int mov_flush_fragment(AVFormatContext *s, int force)
 
         buf_size = avio_close_dyn_buf(mov->mdat_buf, &buf);
         mov->mdat_buf = NULL;
-
-        #if 0
-        exmg_encrypt_buffer_aes_ctr(mov, buf, buf_size);
-        #endif
 
         avio_wb32(s->pb, buf_size + 8);
         ffio_wfourcc(s->pb, "mdat");
