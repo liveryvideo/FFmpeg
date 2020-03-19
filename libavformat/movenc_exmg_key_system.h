@@ -317,6 +317,18 @@ static void exmg_store_key_and_iv(MOVMuxContext *mov) {
     // TODO: generate proper 16-byte length key
 }
 
+static void exmg_encrypt_buffer_aes_ctr(ExmgKeySystemEncryptSession *session, uint8_t *buf, int size) {
+
+    struct AVAESCTR *aes_ctx = av_aes_ctr_alloc();
+    av_aes_ctr_init(aes_ctx, &session->aes_key);
+    av_aes_ctr_set_iv(aes_ctx, &session->aes_iv);
+    uint8_t *src_buf = (uint8_t*) malloc(size);
+    memcpy(src_buf, buf, size);
+    av_aes_ctr_crypt(aes_ctx, buf, src_buf, size);
+    free(src_buf);
+    av_aes_ctr_free(aes_ctx);
+}
+
 /**
  *  Gets called once per every fragment created from the movenc thread.
  * 
@@ -348,14 +360,19 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
         session->key_id_counter++;
 
         //generate new key & IV: scale random int to ensured 32 bits
-        uint32_t media_encrypt_key = (uint32_t) roundf((float) UINT32_MAX * ((float) rand() / (float) RAND_MAX));
-        uint32_t media_encrypt_iv = (uint32_t) roundf((float) UINT32_MAX * ((float) rand() / (float) RAND_MAX));
+        uint32_t media_encrypt_key = (uint32_t) rand();
+        uint32_t media_encrypt_iv = (uint32_t) rand();
+
+        av_log(mov, AV_LOG_VERBOSE, "Generated random key/iv pair for %d next fragments: %u / %u\n", 
+            session->fragments_per_key, 
+            media_encrypt_key, 
+            media_encrypt_iv);
 
         // for now we zero pad and use only a "short" 4-byte key & IVs
-        memset(session->aes_key, 0, sizeof(session->aes_key));
-        memcpy(session->aes_key, &media_encrypt_key, sizeof(media_encrypt_key));
-        memset(session->aes_iv, 0, sizeof(session->aes_iv));
-        memcpy(session->aes_iv, &media_encrypt_iv, sizeof(media_encrypt_iv));
+        memset(&session->aes_key, 0, sizeof(session->aes_key));
+        memcpy(&session->aes_key, &media_encrypt_key, sizeof(media_encrypt_key));
+        memset(&session->aes_iv, 0, sizeof(session->aes_iv));
+        memcpy(&session->aes_iv, &media_encrypt_iv, sizeof(media_encrypt_iv));
     }
 
     // incr frag counter
@@ -364,8 +381,6 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
     // update key-scope duration
     int64_t frag_duration = track->end_pts - track->frag_start;
     session->key_scope_duration += frag_duration;
-
-    // TODO: encrypt mdat payload data here !
 
     // return if not at fragment count yet
     if (session->key_frag_counter < session->fragments_per_key) {
@@ -377,13 +392,19 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
     // compute current media time
     float key_scope_start_secs = (float) session->key_scope_first_pts / (float) track->timescale;
 
+    // read short-key data
+    uint32_t key;
+    uint32_t iv;
+    memcpy(&key, &session->aes_key, sizeof(key));
+    memcpy(&iv, &session->aes_iv, sizeof(iv));
+
     // alloc message buffer (free'd after having been pop'd from queue and sent)
     char *message_buffer = (char *) malloc(EXMG_MESSAGE_BUFFER_SIZE * sizeof(char));
     // write message data
     int printf_res = snprintf(message_buffer, EXMG_MESSAGE_BUFFER_SIZE,
         "{\"creation_time\": %ld, \"fragment_info\": {\"track_id\": %d, \"media_time_secs\": %f, \
         \"first_pts\": %ld, \"duration\": %ld, \"timescale\": %u, \"codec_id\": %d, \"codec_type\": \"%s\", \"bitrate\": %ld}, \
-        \"key_id\": %d, \"key\": %u, \"iv\": %u}",
+        \"key_id\": %d, \"key\": \"0x%08X\", \"iv\": \"0x%08X\"}",
         av_gettime(),
         track->track_id,
         key_scope_start_secs,
@@ -394,8 +415,8 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
         av_get_media_type_string(track->par->codec_type),
         track->par->bit_rate,
         session->key_id_counter,
-        session->aes_key,
-        session->aes_iv
+        key,
+        iv
     );
     
     if (printf_res <= 0 || printf_res >= EXMG_MESSAGE_BUFFER_SIZE) {
@@ -438,19 +459,6 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
 
 }
 
-
-static void exmg_encrypt_buffer_aes_ctr(ExmgKeySystemEncryptSession *session, uint8_t *buf, int size) {
-
-    struct AVAESCTR *aes_ctx = av_aes_ctr_alloc();
-    av_aes_ctr_init(aes_ctx, &session->aes_key);
-    av_aes_ctr_set_iv(aes_ctx, &session->aes_iv);
-    uint8_t *src_buf = (uint8_t*) malloc(size);
-    memcpy(src_buf, buf, size);
-    av_aes_ctr_crypt(aes_ctx, buf, src_buf, size);
-    free(src_buf);
-    av_aes_ctr_free(aes_ctx);
-}
-
 static void exmg_key_message_queue_worker(MOVMuxContext* mov)
 {
     unsigned int delay = EXMG_KEY_QUEUE_WORKER_POLL * 1000000;
@@ -466,7 +474,7 @@ static void exmg_key_system_init(ExmgKeySystemEncryptSession **session_ptr, MOVM
     ExmgKeySystemEncryptSession *session = *session_ptr = malloc(sizeof(ExmgKeySystemEncryptSession));
     memset(session, 0, sizeof(ExmgKeySystemEncryptSession));
 
-    char* message_send_delay = getenv("FF_EXMG_MESSAGE_SEND_DELAY");
+    char* message_send_delay = getenv("FF_EXMG_KEY_MESSAGE_SEND_DELAY");
     if (message_send_delay != NULL) {
         session->message_send_delay_secs = strtof(message_send_delay, NULL);
     } else {
@@ -499,4 +507,6 @@ static void exmg_key_system_init(ExmgKeySystemEncryptSession **session_ptr, MOVM
         "Initialized EMXG key-system encrypt context. Send-delay=%f [s]; Fragments/Key=%d\n",
         session->message_send_delay_secs, session->fragments_per_key
     );
+
+    srand(time(NULL));
 }

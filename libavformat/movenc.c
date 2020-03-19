@@ -4652,7 +4652,7 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
 
     #if 1
     if (mov->exmg_key_system_mqtt_enabled || getenv("FF_EXMG_KEYS_MQTT") != NULL) {
-        //av_log(mov, AV_LOG_VERBOSE, "EXMG key system enabled, DASH MOOF with %d tracks, and %ld bytes of mdat\n", tracks, mdat_size);
+        av_log(mov, AV_LOG_VERBOSE, "EXMG key system enabled, DASH MOOF with %d tracks, and %ld bytes of mdat\n", tracks, mdat_size);
         exmg_key_message_queue_push(mov, mov->nb_streams, mdat_size);
     }
     #endif
@@ -5221,6 +5221,14 @@ static int mov_flush_fragment(AVFormatContext *s, int force)
             buf_size = avio_close_dyn_buf(mov->mdat_buf, &buf);
             mov->mdat_buf = NULL;
         }
+
+        // enables/disables encryption
+        ///*
+        if (getenv("FF_EXMG_KEY_ENCRYPT_ON") != NULL) {
+            av_log(mov, AV_LOG_VERBOSE, "Encrypting %lu bytes of payload @ %p \n", buf_size, buf);
+            exmg_encrypt_buffer_aes_ctr(mov->exmg_key_sys, buf, buf_size);
+        }
+        //*/
 
         avio_write(s->pb, buf, buf_size);
         av_free(buf);
