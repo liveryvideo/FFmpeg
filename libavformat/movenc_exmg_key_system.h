@@ -371,7 +371,7 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
         session->key_id_counter++;
 
         //generate new key & IV: scale random int to ensured 32 bits
-        uint32_t media_encrypt_key = 1170; // (uint32_t) (rand() & 0xFFFF);
+        uint32_t media_encrypt_key = (uint32_t) (rand() & 0xFFFF);
         uint32_t media_encrypt_iv = 0; // (uint32_t) rand();
 
         av_log(mov, AV_LOG_VERBOSE, "Generated random key/iv pair for %d next fragments: %u (0x%08X) / %u (0x%08X)\n",
