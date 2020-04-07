@@ -28,12 +28,12 @@ export output=../dash-out-test
 
 export FF_EXMG_KEYS_MQTT=1
 
-export FF_EXMG_KEY_ENCRYPT_ON=1
+export FF_EXMG_KEY_ENCRYPT_ON=1 # any non-empty string true
 export FF_EXMG_KEY_FILE_OUT=$output/ # ending slash is mandatory (or empty string "")
-export FF_EXMG_KEY_MESSAGE_SEND_DELAY="0" # seconds
-export FF_EXMG_KEY_SCOPE_NB_OF_FRAGMENTS="1" # amount
+export FF_EXMG_KEY_MESSAGE_SEND_DELAY="0" # seconds (float)
+export FF_EXMG_KEY_SCOPE_NB_OF_FRAGMENTS="1" # amount (int)
 
-echo $output
+echo "\n$output\n"
 
 ./ffmpeg \
        -loglevel verbose \
