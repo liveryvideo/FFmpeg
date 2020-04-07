@@ -319,6 +319,17 @@ static void exmg_store_key_and_iv(MOVMuxContext *mov) {
 
 static void exmg_encrypt_buffer_aes_ctr(ExmgKeySystemEncryptSession *session, uint8_t *buf, int size) {
 
+    // read short-key data
+    uint32_t media_encrypt_key;
+    uint32_t media_encrypt_iv;
+    memcpy(&media_encrypt_key, &session->aes_key, sizeof(media_encrypt_key));
+    memcpy(&media_encrypt_iv, &session->aes_iv, sizeof(media_encrypt_iv));
+
+    av_log(NULL, AV_LOG_VERBOSE, "Using key/iv pair to encrypt buffer (%d bytes): %u (0x%08X) / %u (0x%08X)\n",
+        size,
+        media_encrypt_key, media_encrypt_key,
+        media_encrypt_iv, media_encrypt_iv);
+
     struct AVAESCTR *aes_ctx = av_aes_ctr_alloc();
     av_aes_ctr_init(aes_ctx, &session->aes_key);
     av_aes_ctr_set_iv(aes_ctx, &session->aes_iv);
@@ -360,13 +371,13 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
         session->key_id_counter++;
 
         //generate new key & IV: scale random int to ensured 32 bits
-        uint32_t media_encrypt_key = (uint32_t) rand();
-        uint32_t media_encrypt_iv = (uint32_t) rand();
+        uint32_t media_encrypt_key = 1170; // (uint32_t) (rand() & 0xFFFF);
+        uint32_t media_encrypt_iv = 0; // (uint32_t) rand();
 
-        av_log(mov, AV_LOG_VERBOSE, "Generated random key/iv pair for %d next fragments: %u / %u\n", 
+        av_log(mov, AV_LOG_VERBOSE, "Generated random key/iv pair for %d next fragments: %u (0x%08X) / %u (0x%08X)\n",
             session->fragments_per_key, 
-            media_encrypt_key, 
-            media_encrypt_iv);
+            media_encrypt_key, media_encrypt_key,
+            media_encrypt_iv, media_encrypt_iv);
 
         // for now we zero pad and use only a "short" 4-byte key & IVs
         memset(&session->aes_key, 0, sizeof(session->aes_key));
@@ -418,6 +429,8 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
         key,
         iv
     );
+
+    av_log(mov, AV_LOG_VERBOSE, "Wrote key-message: %s\n", message_buffer);
     
     if (printf_res <= 0 || printf_res >= EXMG_MESSAGE_BUFFER_SIZE) {
         av_log(mov, AV_LOG_ERROR, "Fatal error writing string, snprintf result value: %d", printf_res);

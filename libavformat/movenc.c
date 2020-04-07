@@ -5225,7 +5225,7 @@ static int mov_flush_fragment(AVFormatContext *s, int force)
         // enables/disables encryption
         ///*
         if (getenv("FF_EXMG_KEY_ENCRYPT_ON") != NULL) {
-            av_log(mov, AV_LOG_VERBOSE, "Encrypting %lu bytes of payload @ %p \n", buf_size, buf);
+            av_log(mov, AV_LOG_VERBOSE, "Encrypting %d bytes of payload @ %p \n", buf_size, buf);
             exmg_encrypt_buffer_aes_ctr(mov->exmg_key_sys, buf, buf_size);
         }
         //*/
