@@ -70,6 +70,15 @@ jobs:
             git clone https://github.com/OpenVisualCloud/SVT-HEVC.git
             cd SVT-HEVC/Build/linux
             ./build.sh release static install
+      - run:
+          name: SRT
+          command: |
+            cd /tmp
+            git clone https://github.com/Haivision/srt.git
+            cd srt
+            ./configure
+            make
+            make install
       - checkout
       - run:
           name: configure
@@ -95,6 +104,7 @@ jobs:
               --enable-fontconfig \
               --enable-libvmaf \
               --enable-libsvthevc \
+              --enable-libsrt \
               --extra-libs="-lpthread -lm" \
               --pkg-config-flags=--static
       - run:
