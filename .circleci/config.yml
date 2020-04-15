@@ -73,11 +73,12 @@ jobs:
       - run:
           name: SRT
           command: |
+            export DEBIAN_FRONTEND=noninteractive
             apt install -y tclsh
             cd /tmp
             git clone https://github.com/Haivision/srt.git
             cd srt
-            ./configure
+            ./configure --disable-apps
             make
             make install
       - checkout
