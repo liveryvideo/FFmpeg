@@ -115,5 +115,6 @@ jobs:
             make -j2
             mkdir /tmp/artifacts
             cp ffmpeg_g /tmp/artifacts
+            cp /tmp/srt/libsrt.so* /tmp/artifacts
       - store_artifacts:
           path: /tmp/artifacts
