@@ -78,6 +78,7 @@ jobs:
             cd /tmp
             git clone https://github.com/Haivision/srt.git
             cd srt
+            git checkout tags/v1.4.1
             ./configure --disable-apps
             make
             make install
