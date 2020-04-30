@@ -1039,12 +1039,13 @@ static int write_manifest(AVFormatContext *s, int final)
     pool_get_context(&out, mpd_conn_nr);
 
     avio_printf(out, "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
+    //LLS-1614 removed type=static because we don't want players to playback a recording of the stream yet.
     avio_printf(out, "<MPD xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n"
                 "\txmlns=\"urn:mpeg:dash:schema:mpd:2011\"\n"
                 "\txmlns:xlink=\"http://www.w3.org/1999/xlink\"\n"
                 "\txsi:schemaLocation=\"urn:mpeg:DASH:schema:MPD:2011 http://standards.iso.org/ittf/PubliclyAvailableStandards/MPEG-DASH_schema_files/DASH-MPD.xsd\"\n"
                 "\tprofiles=\"urn:mpeg:dash:profile:isoff-live:2011\"\n"
-                "\ttype=\"%s\"\n", final ? "static" : "dynamic");
+                "\ttype=\"%s\"\n", "dynamic");
     if (final) {
         avio_printf(out, "\tmediaPresentationDuration=\"");
         write_time(out, c->total_duration);
@@ -1086,7 +1087,13 @@ static int write_manifest(AVFormatContext *s, int final)
         write_time(out, start_time);
         avio_printf(out, "\">\n");
     } else {
-        avio_printf(out, "\t<Period id=\"0\" start=\"PT0.0S\">\n");
+        if (final) {
+            //LLS-1614 Set fixed duration
+            avio_printf(out, "\t<Period id=\"0\" start=\"PT0.0S\" duration=\"PT0.0S\">\n");
+        } else {
+            avio_printf(out, "\t<Period id=\"0\" start=\"PT0.0S\">\n");
+        }
+
     }
 
     for (i = 0; i < c->nb_as; i++) {
@@ -2036,9 +2043,6 @@ static int dash_write_trailer(AVFormatContext *s)
 {
     DASHContext *c = s->priv_data;
     int i;
-
-    //LLS-421 For now we're skipping on demand manifest creation
-    return 0;
 
     if (s->nb_streams > 0) {
         OutputStream *os = &c->streams[0];
