@@ -285,11 +285,15 @@ static void exmg_key_message_queue_pop(MOVMuxContext *mov)
     float next_popable_message_media_time = (float) message_media_time / (float) track->timescale;
     float time_diff = media_time_secs - next_popable_message_media_time;
 
-    av_log(mov, AV_LOG_VERBOSE, "Next pop'able message media time: %f\n", next_popable_message_media_time);
+    av_log(mov, AV_LOG_VERBOSE, "(%s) Next pop'able message media time: %f\n", 
+        av_get_media_type_string(track->par->codec_type),
+        next_popable_message_media_time);
 
     if (time_diff >= session->message_send_delay_secs) {
 
-        av_log(mov, AV_LOG_VERBOSE, "EXMG key-message queue pop, media-time difference is: %f secs\n", time_diff);
+        av_log(mov, AV_LOG_VERBOSE, "(%s) EXMG key-message queue pop, media-time difference is: %f secs\n", 
+            av_get_media_type_string(track->par->codec_type),
+            time_diff);
 
         session->messages_queue_pop_idx++;
         ff_mutex_unlock(&session->queue_lock);
@@ -309,7 +313,10 @@ static void exmg_key_message_queue_pop(MOVMuxContext *mov)
 
     } else {
         ff_mutex_unlock(&session->queue_lock);
-        av_log(mov, AV_LOG_VERBOSE, "EXMG key-message queue not pop'd, media-time difference is: %f secs\n", time_diff);
+
+        av_log(mov, AV_LOG_VERBOSE, "(%s) EXMG key-message queue not pop'd, media-time difference is: %f secs\n",
+            av_get_media_type_string(track->par->codec_type),
+            time_diff);
     }
 }
 
@@ -352,7 +359,7 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
 
     if (mov->nb_streams > 1) {
         av_log(mov, AV_LOG_ERROR, "EXMG key system does not support multiple tracks per DASH fragment! Exiting process.");
-        exit(0); //
+        exit(1); //
         return;
     }
 
@@ -366,6 +373,7 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
 
     // generate new key when counter at zero
     if (session->key_frag_counter == 0) {
+
         session->key_scope_duration = 0;
         session->key_scope_first_pts = track->frag_start;
         session->key_id_counter++;
@@ -374,7 +382,8 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
         uint32_t media_encrypt_key = (uint32_t) (rand() & 0xFFFF);
         uint32_t media_encrypt_iv = 0; // (uint32_t) rand();
 
-        av_log(mov, AV_LOG_VERBOSE, "Generated random key/iv pair for %d next fragments: %u (0x%08X) / %u (0x%08X)\n",
+        av_log(mov, AV_LOG_VERBOSE, "(%s) Set key/iv pair for %d next fragments: %u (0x%08X) / %u (0x%08X)\n",
+            av_get_media_type_string(track->par->codec_type),
             session->fragments_per_key, 
             media_encrypt_key, media_encrypt_key,
             media_encrypt_iv, media_encrypt_iv);
@@ -391,7 +400,14 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
 
     // update key-scope duration
     int64_t frag_duration = track->end_pts - track->frag_start;
+
     session->key_scope_duration += frag_duration;
+
+    av_log(mov, 
+        AV_LOG_VERBOSE, 
+        "(%s) Fragment duration: %ld\n", 
+        av_get_media_type_string(track->par->codec_type),
+        frag_duration);
 
     // return if not at fragment count yet
     if (session->key_frag_counter < session->fragments_per_key) {
@@ -430,7 +446,9 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
         iv
     );
 
-    av_log(mov, AV_LOG_VERBOSE, "Wrote key-message: %s\n", message_buffer);
+    av_log(mov, AV_LOG_VERBOSE, "(%s) Wrote key-message: %s\n", 
+        av_get_media_type_string(track->par->codec_type), 
+        message_buffer);
     
     if (printf_res <= 0 || printf_res >= EXMG_MESSAGE_BUFFER_SIZE) {
         av_log(mov, AV_LOG_ERROR, "Fatal error writing string, snprintf result value: %d", printf_res);
@@ -450,7 +468,7 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
         if (session->messages_queue_pop_idx == -1) {
             av_log(mov, AV_LOG_ERROR, "EXMG key-message queue overflowed. The delay set is probably too high. Exiting process now.");
             ff_mutex_unlock(&session->queue_lock);
-            exit(0);
+            exit(1);
         }
         // normal operation, allow write over queue in circular way
         session->messages_queue_push_idx = 0;
@@ -459,16 +477,16 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
     if (session->messages_queue_push_idx == session->messages_queue_pop_idx) {
         av_log(mov, AV_LOG_ERROR, "EXMG key-message queue full. The delay set is probably too high. Exiting process now.");
         ff_mutex_unlock(&session->queue_lock);
-        exit(0);
+        exit(1);
     }
 
     ff_mutex_unlock(&session->queue_lock);
 
     av_log(mov, AV_LOG_VERBOSE,
-        "Pushed key-message with scope starting at: %f [s] for track-id %d of type: %s\n",
+        "(%s) Pushed key-message with scope starting at: %f [s] for track-id %d\n",
+        av_get_media_type_string(track->par->codec_type),
         key_scope_start_secs,
-        track->track_id,
-        av_get_media_type_string(track->par->codec_type));
+        track->track_id);
 
 }
 

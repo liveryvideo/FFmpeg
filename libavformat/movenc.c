@@ -4543,8 +4543,6 @@ static int mov_write_sidx_tag(AVIOContext *pb,
 static int mov_write_sidx_tags(AVIOContext *pb, MOVMuxContext *mov,
                                int tracks, int ref_size)
 {
-    av_log(mov, AV_LOG_VERBOSE, "Writing SIDX tags\n");
-
     int i, round, ret;
     AVIOContext *avio_buf;
     int total_size = 0;
@@ -4652,7 +4650,7 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
 
     #if 1
     if (mov->exmg_key_system_mqtt_enabled || getenv("FF_EXMG_KEYS_MQTT") != NULL) {
-        av_log(mov, AV_LOG_VERBOSE, "EXMG key system enabled, DASH MOOF with %d tracks, and %ld bytes of mdat\n", tracks, mdat_size);
+        //av_log(mov, AV_LOG_VERBOSE, "EXMG key system enabled, DASH MOOF with %d tracks, and %ld bytes of mdat\n", tracks, mdat_size);
         exmg_key_message_queue_push(mov, mov->nb_streams, mdat_size);
     }
     #endif
