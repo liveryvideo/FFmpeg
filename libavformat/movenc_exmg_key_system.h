@@ -41,7 +41,8 @@ struct MOVMuxContext;
 
 typedef struct ExmgKeySystemEncryptSession {
     float message_send_delay_secs;
-    int fragments_per_key;
+
+    uint32_t fragments_per_key;
 
     uint32_t key_id_counter;
 
@@ -382,7 +383,7 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
         uint32_t media_encrypt_key = (uint32_t) (rand() & 0xFFFF);
         uint32_t media_encrypt_iv = 0; // (uint32_t) rand();
 
-        av_log(mov, AV_LOG_VERBOSE, "(%s) Set key/iv pair for %d next fragments: %u (0x%08X) / %u (0x%08X)\n",
+        av_log(mov, AV_LOG_VERBOSE, "(%s) Set key/iv pair for %u next fragments: %u (0x%08X) / %u (0x%08X)\n",
             av_get_media_type_string(track->par->codec_type),
             session->fragments_per_key, 
             media_encrypt_key, media_encrypt_key,
@@ -401,19 +402,32 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
     // update key-scope duration
     int64_t frag_duration = track->end_pts - track->frag_start;
 
-    session->key_scope_duration += frag_duration;
+    if (frag_duration == 0) { // Happens in LLS/streaming=1 mode for audio-type tracks
+        session->key_scope_duration = track->frag_start - session->key_scope_first_pts; // FIXME: This is a workaroudn, frag_duration should never be zero
+    } else {
+        session->key_scope_duration += frag_duration;
+    }
 
     av_log(mov, 
         AV_LOG_VERBOSE, 
-        "(%s) Fragment duration: %ld\n", 
+        "(%s) Fragment duration: %ld, key-scope so-far duration: %ld (%u of %u fragments done in encryption-scope)\n", 
         av_get_media_type_string(track->par->codec_type),
-        frag_duration);
+        frag_duration,
+        session->key_scope_duration,
+        session->key_frag_counter,
+        session->fragments_per_key
+    );
 
     // return if not at fragment count yet
     if (session->key_frag_counter < session->fragments_per_key) {
         return;
     } else {
         session->key_frag_counter = 0;
+    }
+
+    if (frag_duration == 0) {
+        session->key_scope_duration++; // FIXME: this is really just a nifty little trick to fix lookup due to the bug noted above
+                                       // in order to fix player lookup which will do: firstPts < keyBoundaryPts
     }
 
     // compute current media time
@@ -514,8 +528,8 @@ static void exmg_key_system_init(ExmgKeySystemEncryptSession **session_ptr, MOVM
 
     char* fragments_per_key = getenv("FF_EXMG_KEY_SCOPE_NB_OF_FRAGMENTS");
     if (fragments_per_key != NULL) {
-        session->fragments_per_key = atoi(fragments_per_key);
-        if (session->fragments_per_key <= 0) {
+        session->fragments_per_key = (uint32_t) atoi(fragments_per_key);
+        if (session->fragments_per_key == 0) {
             session->fragments_per_key = 1;
         }
     } else {
