@@ -155,6 +155,7 @@ typedef struct DASHContext {
     int nr_of_streams_to_flush;
     int nr_of_streams_flushed;
     int http_retry;
+    int finish_stream;
     int first_mpd_written; /* used to log some details the first time the mpd is written */
     stats *time_stats;
 } DASHContext;
@@ -2044,6 +2045,9 @@ static int dash_write_trailer(AVFormatContext *s)
     DASHContext *c = s->priv_data;
     int i;
 
+    if (!c->finish_stream)
+        return 0;
+
     if (s->nb_streams > 0) {
         OutputStream *os = &c->streams[0];
         // If no segments have been written so far, try to do a crude
@@ -2140,6 +2144,7 @@ static const AVOption options[] = {
     { "lhls", "Enable Low-latency HLS(Experimental). Adds #EXT-X-PREFETCH tag with current segment's URI", OFFSET(lhls), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, E },
     { "master_m3u8_publish_rate", "Publish master playlist every after this many segment intervals", OFFSET(master_publish_rate), AV_OPT_TYPE_INT, {.i64 = 0}, 0, UINT_MAX, E},
     { "http_retry", "Retry HTTP requests if they fail", OFFSET(http_retry), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, E },
+    { "finish_stream", "Write one last mpd update when ffmpeg exits", OFFSET(finish_stream), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, E },
     { NULL },
 };
 
