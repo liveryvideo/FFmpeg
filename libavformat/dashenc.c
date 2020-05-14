@@ -1892,7 +1892,8 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
         av_log(s, AV_LOG_INFO, "----------------------------------------\n");
         rel_init_time = get_init_time(pkt);
         if (rel_init_time <= 0) {
-            av_log(s, AV_LOG_INFO, "Init time of pkt = 0, codec: %s\n", os->codec_str);
+            av_log(s, AV_LOG_INFO, "Init time of pkt = 0, codec: %s. So skip optimising availabilityStartTime.\n", os->codec_str);
+            init_start_time = curr_time;
         } else {
             int64_t rel_time = av_gettime_relative();
             init_start_time = curr_time - (rel_time - rel_init_time);
