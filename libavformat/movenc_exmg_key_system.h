@@ -14,7 +14,7 @@
 // defaults, for when not set by env
 #define EXMG_MESSAGE_SEND_DELAY 10.0f // seconds // overrriden by FF_EXMG_KEY_MESSAGE_SEND_DELAY env var
 
-#define EXMG_KEY_QUEUE_WORKER_POLL 0.020f // seconds
+#define EXMG_KEY_QUEUE_WORKER_POLL 0.020f // seconds -> default to 50fps to allow maximum needed accuracy
 
 // MQTT config
 ///*
