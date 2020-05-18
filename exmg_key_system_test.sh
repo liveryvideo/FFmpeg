@@ -35,8 +35,10 @@ export FF_EXMG_KEY_SCOPE_NB_OF_FRAGMENTS="30" # amount (int)
 
 echo "\n$output\n"
 
+export log_level="info" # quiet / error / debug / verbose
+
 ./ffmpeg \
-       -loglevel verbose \
+       -loglevel repeat+level+$log_level \
        -re -i $input \
        -flags +global_header \
        -r $frame_rate_num/$frame_rate_den \
