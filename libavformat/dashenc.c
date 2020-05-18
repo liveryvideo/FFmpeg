@@ -158,6 +158,7 @@ typedef struct DASHContext {
     int finish_stream;
     int first_mpd_written; /* used to log some details the first time the mpd is written */
     stats *time_stats;
+    int64_t suggested_presentation_delay;
 } DASHContext;
 
 static struct codec_string {
@@ -1057,7 +1058,7 @@ static int write_manifest(AVFormatContext *s, int final)
         if (c->use_template && !c->use_timeline)
             update_period = 500;
         avio_printf(out, "\tminimumUpdatePeriod=\"PT%"PRId64"S\"\n", update_period);
-        avio_printf(out, "\tsuggestedPresentationDelay=\"PT%"PRId64"S\"\n", c->last_duration / AV_TIME_BASE);
+        avio_printf(out, "\tsuggestedPresentationDelay=\"PT%"PRId64"S\"\n", c->suggested_presentation_delay / AV_TIME_BASE);
         if (c->availability_start_time[0])
             avio_printf(out, "\tavailabilityStartTime=\"%s\"\n", c->availability_start_time);
         format_date_now(now_str, sizeof(now_str));
@@ -2146,6 +2147,7 @@ static const AVOption options[] = {
     { "master_m3u8_publish_rate", "Publish master playlist every after this many segment intervals", OFFSET(master_publish_rate), AV_OPT_TYPE_INT, {.i64 = 0}, 0, UINT_MAX, E},
     { "http_retry", "Retry HTTP requests if they fail", OFFSET(http_retry), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, E },
     { "finish_stream", "Write one last mpd update when ffmpeg exits", OFFSET(finish_stream), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, E },
+    { "suggested_presentation_delay", "SuggestedPresentationDelay (in seconds, fractional value can be set)", OFFSET(suggested_presentation_delay ), AV_OPT_TYPE_DURATION, { .i64 = 5000000 }, 0, INT_MAX, E },
     { NULL },
 };
 
