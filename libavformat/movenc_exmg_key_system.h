@@ -12,8 +12,9 @@
 #define EXMG_MESSAGE_QUEUE_SIZE 0xFFFF
 
 // defaults, for when not set by env
-#define EXMG_MESSAGE_SEND_DELAY 10.0f // seconds
-#define EXMG_KEY_QUEUE_WORKER_POLL 1.0f // seconds
+#define EXMG_MESSAGE_SEND_DELAY 10.0f // seconds // overrriden by FF_EXMG_KEY_MESSAGE_SEND_DELAY env var
+
+#define EXMG_KEY_QUEUE_WORKER_POLL 0.020f // seconds
 
 // MQTT config
 ///*
@@ -180,7 +181,7 @@ static int exmg_mqtt_client_send(char* message)
  */
 static int exmg_write_key_file(const char *filename, char *data, int append)
 {
-    av_log(NULL, AV_LOG_VERBOSE, "exmg_write_key_file: %s\n", filename);
+    av_log(NULL, AV_LOG_DEBUG, "exmg_write_key_file: %s\n", filename);
 
     FILE *f;
     if (append) {
@@ -286,14 +287,15 @@ static void exmg_key_message_queue_pop(MOVMuxContext *mov)
     float next_popable_message_media_time = (float) message_media_time / (float) track->timescale;
     float time_diff = media_time_secs - next_popable_message_media_time;
 
-    av_log(mov, AV_LOG_VERBOSE, "(%s) Next pop'able message media time: %f\n", 
+    av_log(mov, AV_LOG_DEBUG, "(%s) Next pop'able message media-time: %.2f [s]\n",
         av_get_media_type_string(track->par->codec_type),
         next_popable_message_media_time);
 
     if (time_diff >= session->message_send_delay_secs) {
 
-        av_log(mov, AV_LOG_VERBOSE, "(%s) EXMG key-message queue pop, media-time difference is: %f secs\n", 
+        av_log(mov, AV_LOG_INFO, "(%s) EXMG key-message queue pop at media-time %.2f (delay-delta=%.2f) [s]\n",
             av_get_media_type_string(track->par->codec_type),
+            next_popable_message_media_time,
             time_diff);
 
         session->messages_queue_pop_idx++;
@@ -350,7 +352,7 @@ static void exmg_encrypt_buffer_aes_ctr(ExmgKeySystemEncryptSession *session, ui
 
 /**
  *  Gets called once per every fragment created from the movenc thread.
- * 
+ *
  * */
 static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t mdat_size)
 {
@@ -385,7 +387,7 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
 
         av_log(mov, AV_LOG_VERBOSE, "(%s) Set key/iv pair for %u next fragments: %u (0x%08X) / %u (0x%08X)\n",
             av_get_media_type_string(track->par->codec_type),
-            session->fragments_per_key, 
+            session->fragments_per_key,
             media_encrypt_key, media_encrypt_key,
             media_encrypt_iv, media_encrypt_iv);
 
@@ -408,9 +410,9 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
         session->key_scope_duration += frag_duration;
     }
 
-    av_log(mov, 
-        AV_LOG_VERBOSE, 
-        "(%s) Fragment duration: %ld, key-scope so-far duration: %ld (%u of %u fragments done in encryption-scope)\n", 
+    av_log(mov,
+        AV_LOG_VERBOSE,
+        "(%s) Fragment duration: %ld, key-scope so-far duration: %ld (%u of %u fragments done in encryption-scope)\n",
         av_get_media_type_string(track->par->codec_type),
         frag_duration,
         session->key_scope_duration,
@@ -460,10 +462,10 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
         iv
     );
 
-    av_log(mov, AV_LOG_VERBOSE, "(%s) Wrote key-message: %s\n", 
-        av_get_media_type_string(track->par->codec_type), 
+    av_log(mov, AV_LOG_VERBOSE, "(%s) Wrote key-message: %s\n",
+        av_get_media_type_string(track->par->codec_type),
         message_buffer);
-    
+
     if (printf_res <= 0 || printf_res >= EXMG_MESSAGE_BUFFER_SIZE) {
         av_log(mov, AV_LOG_ERROR, "Fatal error writing string, snprintf result value: %d", printf_res);
         exit(1);
