@@ -4,7 +4,7 @@
 
 #include "movenc.h"
 
-#include "MQTTClient.h"
+//#include "MQTTClient.h"
 
 // hard constants ("should be enough for everyone")
 // - or switch to a dynamically allocated queuing/printing
@@ -66,6 +66,7 @@ typedef struct ExmgKeySystemEncryptSession {
 
 } ExmgKeySystemEncryptSession;
 
+/*
 static int exmg_mqtt_client_connect(MQTTClient *client)
 {
     MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
@@ -171,6 +172,7 @@ static int exmg_mqtt_client_send(char* message)
 
     return result;
 }
+*/
 
 /**
  * POSIX FS convenience layer to write the file straight forward
