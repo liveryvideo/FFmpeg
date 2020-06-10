@@ -37,6 +37,7 @@ export FF_EXMG_KEY_MESSAGE_SEND_DELAY="0" # seconds (float)
 export FF_EXMG_KEY_SCOPE_NB_OF_FRAGMENTS="30" # amount (int)
 
 echo "Publishing to: $output and sub-directory: $sub_folder"
+echo "MPD available at: $mpd_url"
 
 export log_level="info" # quiet / error / debug / verbose
 
