@@ -20,8 +20,11 @@ export event_name="stephan"
 sub_folder="$(date +%s)"
 
 export output="https://p-ep$stream_id.i.akamaientrypoint.net/cmaf/$stream_id/$event_name"
+
 #Stream can be watched with this MPD:
 #https://exmachina-ull-demo.akamaized.net/cmaf/live/664379/stephan/out.mpd
+
+export mpd_url="https://exmachina-ull-demo.akamaized.net/cmaf/live/$stream_id/$event_name/out.mpd"
 
 rm -Rf tmp/*
 mkdir -p tmp/$sub_folder
