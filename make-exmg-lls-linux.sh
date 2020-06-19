@@ -21,3 +21,4 @@
 make -j4
 cp ffmpeg_g ../playtrivia-video-tests/ffmpeg-exmg-lls-linux
 cp ffmpeg_g ~/go/src/bitbucket.org/exmachina/video-encoder/assets/ffmpeg-exmg-lls-linux
+
