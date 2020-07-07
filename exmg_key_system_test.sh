@@ -19,10 +19,8 @@ export event_name="stephan"
 
 sub_folder="$(date +%s)"
 
-#export output="https://p-ep$stream_id.i.akamaientrypoint.net/cmaf/$stream_id/$event_name"
-
-rm -Rf ../dash-out-test/*
-mkdir -p ../dash-out-test/$sub_folder
+rm -Rf tmp/*
+mkdir -p tmp/$sub_folder
 
 export output=../dash-out-test
 
