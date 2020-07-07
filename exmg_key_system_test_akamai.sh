@@ -47,6 +47,10 @@ export log_level="info" # quiet / error / debug / verbose
        -flags +global_header \
        -r $frame_rate_num/$frame_rate_den \
        -af aresample=async=1 \
+       -vf "settb=AVTB,\
+              setpts='trunc(PTS/1K)*1K+st(1,trunc(RTCTIME/1K))-1K*trunc(ld(1)/1K)', \
+              drawtext=rate=30:text='%{localtime}.%{eif\:1M*t-1K*trunc(t*1K)\:d}:' \
+              x=300:y=300:fontfile=./Linebeam.ttf:fontsize=48:fontcolor='white':boxcolor=0x00AAAAAA:box=1" \
        -c:v libx264 \
        -preset medium \
        -b:v $video_bitrate \
