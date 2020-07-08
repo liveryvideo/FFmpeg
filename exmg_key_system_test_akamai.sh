@@ -14,7 +14,7 @@ export input_height=480
 export video_bitrate="800k"
 export audio_bitrate="128k"
 export output_resolution="640x480"
-export input="/home/joep/Videos/Caminandes_Llamigos-720p.m4v"
+export input="Spring.mp4"
 export event_name="stephan"
 
 sub_folder="$(date +%s)"
@@ -33,7 +33,7 @@ export FF_EXMG_KEYS_MQTT=1
 
 export FF_EXMG_KEY_ENCRYPT_ON=1 # any non-empty string true
 export FF_EXMG_KEY_FILE_OUT=tmp/$sub_folder/ # ending slash is mandatory (or empty string "")
-export FF_EXMG_KEY_MESSAGE_SEND_DELAY="0" # seconds (float)
+export FF_EXMG_KEY_MESSAGE_SEND_DELAY="10" # seconds (float)
 export FF_EXMG_KEY_SCOPE_NB_OF_FRAGMENTS="30" # amount (int)
 
 echo "Publishing to: $output and sub-directory: $sub_folder"
@@ -43,7 +43,7 @@ export log_level="info" # quiet / error / debug / verbose
 
 ./ffmpeg \
        -loglevel repeat+level+$log_level \
-       -re -i $input \
+       -re -stream_loop -1 -i $input \
        -flags +global_header \
        -r $frame_rate_num/$frame_rate_den \
        -af aresample=async=1 \
