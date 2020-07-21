@@ -1931,6 +1931,12 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
         seg_end_duration = c->seg_duration;
     }
 
+    if (pkt->flags & AV_PKT_FLAG_KEY && os->packets_written &&
+        av_compare_ts(elapsed_duration, st->time_base,
+                      seg_end_duration, AV_TIME_BASE_Q) >= 0) {
+        av_log(s, AV_LOG_INFO, "segment_duration_stats: rep_%d_bitrate_%d, value: %" PRId64 "\n", pkt->stream_index, os->bit_rate, c->last_duration);
+    }
+
     //Skip flush if a video track is available and this is an audio track
     //Audio tracks are flushed as soon as the first video track is flushed.
     if ((!c->has_video || st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) &&
@@ -1953,7 +1959,6 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
                        "Segment durations differ too much, enable use_timeline "
                        "and use_template, or keep a stricter keyframe interval\n");
             }
-            av_log(s, AV_LOG_INFO, "segment_duration_stats: rep_%d_bitrate_%d, value: %" PRId64 "\n", pkt->stream_index, os->bit_rate, c->last_duration);
         }
 
         if ((ret = dash_flush(s, 0, pkt->stream_index)) < 0) {
