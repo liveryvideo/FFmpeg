@@ -1308,7 +1308,7 @@ static int dash_init(AVFormatContext *s)
                 return AVERROR(EINVAL);
         }
 
-        snprintf(bitrate_str, 100, "bitrate_stats: rep_%d_bitrate_%d, bytes", i, os->bit_rate);
+        snprintf(bitrate_str, 100, "bitrate_stats: rep_%d_bitrate_%d, value", i, os->bit_rate);
         os->bitrate_stats = init_time_stats(bitrate_str, 1 * 1000000);
         os->conn_nr = -1;
 
@@ -1518,6 +1518,7 @@ static int add_segment(OutputStream *os, const char *file,
     seg->time = time;
     seg->duration = duration;
     if (seg->time < 0) { // If pts<0, it is expected to be cut away with an edit list
+        //joep: when would this happen?
         seg->duration += seg->time;
         seg->time = 0;
     }
@@ -1846,7 +1847,7 @@ static void print_stats(DASHContext *c, OutputStream *os, AVPacket *pkt)
         av_log(c, AV_LOG_INFO, "missing packet time ret: %"PRId64", codec: %s\n", pkt_init_time, os->codec_str);
     }
 
-    print_total_stats(os->bitrate_stats, pkt->size);
+    print_total_stats(os->bitrate_stats, pkt->size*8);
 }
 
 static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
@@ -1867,14 +1868,18 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
     // By setting a nonzero duration here, we can be sure that the mp4 muxer won't
     // invoke its heuristic (this doesn't have to be identical to that algorithm),
     // so that we know the exact timestamps of fragments.
-    if (!pkt->duration && os->last_dts != AV_NOPTS_VALUE)
+    if (!pkt->duration && os->last_dts != AV_NOPTS_VALUE) {
+        av_log(s, AV_LOG_INFO, "Joep changing pkt duration\n");
         pkt->duration = pkt->dts - os->last_dts;
+    }
+
     os->last_dts = pkt->dts;
 
     // If forcing the stream to start at 0, the mp4 muxer will set the start
     // timestamps to 0. Do the same here, to avoid mismatches in duration/timestamps.
     if (os->first_pts == AV_NOPTS_VALUE &&
         s->avoid_negative_ts == AVFMT_AVOID_NEG_TS_MAKE_ZERO) {
+        av_log(s, AV_LOG_INFO, "Joep set start timestamp to 0\n");
         pkt->pts -= pkt->dts;
         pkt->dts  = 0;
     }
@@ -1948,6 +1953,7 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
                        "Segment durations differ too much, enable use_timeline "
                        "and use_template, or keep a stricter keyframe interval\n");
             }
+            av_log(s, AV_LOG_INFO, "segment_duration_stats: rep_%d_bitrate_%d, value: %" PRId64 "\n", pkt->stream_index, os->bit_rate, c->last_duration);
         }
 
         if ((ret = dash_flush(s, 0, pkt->stream_index)) < 0) {
@@ -2012,6 +2018,24 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
             //TODO: this uses a wrong target_duration
             write_hls_media_playlist(os, s, pkt->stream_index, 0, prefetch_url, 0);
         }
+
+        //framerate of samplerate zou de pts increase moeten bepalen?
+        //time_base zou dat ook zijn
+        int64_t seg_start_time = (int64_t) (os->segment_index-1) * c->seg_duration/1000;
+        //seg_start_time vs pts
+        int64_t pts_in_ms = pkt->pts*1000*st->time_base.num/st->time_base.den;
+        int pts_diff = seg_start_time - pts_in_ms;
+
+        av_log(NULL, AV_LOG_INFO, "pts_diff_stats: rep_%d_bitrate_%d, value: %d, pts: %"PRId64", timebase: %d/%d segment_index: %d, start_time: %" PRId64 ", pts_in_ms: %" PRId64 " \n",
+            pkt->stream_index,
+            os->bit_rate,
+            pts_diff,
+            pkt->pts,
+            st->time_base.num,
+            st->time_base.den,
+            os->segment_index,
+            seg_start_time,
+            pts_in_ms);
     }
 
     //write out the data immediately in streaming mode
