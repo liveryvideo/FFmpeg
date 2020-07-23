@@ -319,6 +319,7 @@ int ff_http_do_new_request(URLContext *h, const char *uri)
     int port1, port2;
 
     s->start_time_ms = av_gettime() / 1000;
+    printf("setting start_time_ms to %" PRId64 " for url: %s\n", s->start_time_ms, uri);
 
     if (!h->prot ||
         !(!strcmp(h->prot->name, "http") ||
@@ -1683,7 +1684,7 @@ static int http_shutdown(URLContext *h, int flags)
 
             curr_time_ms = av_gettime() / 1000;
             req_time_ms = curr_time_ms - s->start_time_ms;
-            av_log(h, AV_LOG_INFO, "HTTP response: %d, duration: %"PRId64", url: %s \n", s->http_code, req_time_ms, s->location);
+            av_log(h, AV_LOG_INFO, "HTTP response: %d, duration: %"PRId64", start_time_ms: %" PRId64 ", url: %s \n", s->http_code, req_time_ms, s->start_time_ms, s->location);
             if (s->http_code >= 400 || s->http_code == 0) {
                 av_log(h, AV_LOG_INFO, "HTTP response. url: %s, data: [%s]\n", s->location, buf);
             }
