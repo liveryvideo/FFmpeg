@@ -6231,7 +6231,7 @@ static int mov_init(AVFormatContext *s)
     if (!mov->tracks)
         return AVERROR(ENOMEM);
 
-    exmg_key_system_init(&mov->exmg_key_sys, mov);
+    exmg_secure_sync_enc_session_init(&mov->exmg_key_sys, mov);
 
     if (mov->encryption_scheme_str != NULL && strcmp(mov->encryption_scheme_str, "none") != 0) {
         if (strcmp(mov->encryption_scheme_str, "cenc-aes-ctr") == 0) {

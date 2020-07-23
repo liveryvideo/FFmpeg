@@ -37,10 +37,104 @@
 
 #define EXMG_KEY_MESSAGE_FILENAME_DIR "./" // default value when env-var not set
 
+//
+//
+// Plain C standard overflowable queue impl
+// heavily inspired from https://codeforwin.org/2018/08/queue-implementation-using-array-in-c.html
+//
+//
+
 struct MOVTrack;
 struct MOVMuxContext;
 
-typedef struct ExmgKeySystemEncryptSession {
+typedef struct ExmgQueue {
+    size_t head;
+    size_t tail;
+    size_t capacity;
+    size_t len;
+    void **q;
+} ExmgQueue;
+
+/*
+    initialize queue pointers
+*/
+static void exmg_queue_init(ExmgQueue **queue_ptr, size_t capacity)
+{
+    ExmgQueue *queue = *queue_ptr = malloc(sizeof(ExmgQueue));
+    queue->head = 0;
+    queue->tail = 0;
+    queue->len = 0;
+    queue->capacity = capacity;
+
+    size_t queue_bytes = capacity * sizeof(void*);
+    queue->q = malloc(queue_bytes);
+    memset(queue->q, 0, queue_bytes);
+}
+
+static void exmg_queue_deinit(ExmgQueue **queue)
+{
+    if (*queue == NULL) return;
+    free((*queue)->q);
+    free(*queue);
+    *queue = NULL;
+}
+
+/*
+    return 1 if queue is full, otherwise return 0
+*/
+static int exmg_queue_is_full(ExmgQueue *queue)
+{
+    return queue->len == queue->capacity;
+}
+
+/*
+  return 1 if the queue is empty, otherwise return 0
+*/
+static int exmg_queue_is_empty(ExmgQueue *queue)
+{
+    return queue->len == 0;
+}
+
+static size_t exmg_queue_length(ExmgQueue *queue)
+{
+    return queue->len;
+}
+
+static void* exmg_queue_peek(ExmgQueue *queue)
+{
+    if (exmg_queue_is_empty(queue)) return NULL;
+    return queue->q[queue->head];
+}
+
+/*
+   enqueue an element
+   precondition: the queue is not full
+*/
+static int exmg_queue_push(ExmgQueue *queue, void* element)
+{
+    if (exmg_queue_is_full(queue)) return 0;
+
+    queue->q[queue->tail] = element;
+    queue->tail = (queue->tail + 1) % queue->capacity;
+    queue->len++;
+    return 1;
+}
+
+/*
+    dequeue an element
+    precondition: queue is not empty
+*/
+static void* exmg_queue_pop(ExmgQueue *queue)
+{
+    if (exmg_queue_is_empty(queue)) return NULL;
+
+    void* data = queue->q[queue->head];
+    queue->head = (queue->head + 1) % queue->capacity;
+    queue->len--;
+    return data;
+}
+
+typedef struct ExmgSecureSyncEncSession {
     float message_send_delay_secs;
 
     uint32_t fragments_per_key;
@@ -54,19 +148,33 @@ typedef struct ExmgKeySystemEncryptSession {
     uint8_t aes_key[AES_CTR_KEY_SIZE];
     uint8_t aes_iv[AES_CTR_IV_SIZE];
 
-    // TODO: use one array of data struct instead of many arrays here
-    char *messages_queue[EXMG_MESSAGE_QUEUE_SIZE]; // can't be more than MAX_INT32
-    int64_t messages_queue_media_time[EXMG_MESSAGE_QUEUE_SIZE];
-    int32_t messages_queue_push_idx;
-    int32_t messages_queue_pop_idx;
+    ExmgQueue *scope_info_queue;
 
     pthread_mutex_t queue_lock;
     pthread_t queue_worker;
     pthread_cond_t queue_cond;
 
-} ExmgKeySystemEncryptSession;
+} ExmgSecureSyncEncSession;
 
-/*
+typedef struct ExmgSecureSyncScope {
+    char *media_key_message;
+    int64_t media_time;
+} ExmgSecureSyncScope;
+
+static ExmgSecureSyncScope* exmg_secure_sync_scope_new(char *media_key_message, int64_t media_time)
+{
+    ExmgSecureSyncScope *sync_scope_info = malloc(sizeof(ExmgSecureSyncScope));
+    sync_scope_info->media_key_message = media_key_message;
+    sync_scope_info->media_time = media_time;
+    return sync_scope_info;
+}
+
+static void exmg_secure_sync_scope_dispose(ExmgSecureSyncScope* sync_scope_info)
+{
+    free(sync_scope_info);
+}
+
+#if 0
 static int exmg_mqtt_client_connect(MQTTClient *client)
 {
     MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
@@ -172,7 +280,30 @@ static int exmg_mqtt_client_send(char* message)
 
     return result;
 }
-*/
+#endif
+
+static void exmg_encrypt_buffer_aes_ctr(ExmgSecureSyncEncSession *session, uint8_t *buf, int size) {
+
+    // read short-key data
+    uint32_t media_encrypt_key;
+    uint32_t media_encrypt_iv;
+    memcpy(&media_encrypt_key, &session->aes_key, sizeof(media_encrypt_key));
+    memcpy(&media_encrypt_iv, &session->aes_iv, sizeof(media_encrypt_iv));
+
+    av_log(NULL, AV_LOG_VERBOSE, "Using key/iv pair to encrypt buffer (%d bytes): %u (0x%08X) / %u (0x%08X)\n",
+        size,
+        media_encrypt_key, media_encrypt_key,
+        media_encrypt_iv, media_encrypt_iv);
+
+    struct AVAESCTR *aes_ctx = av_aes_ctr_alloc();
+    av_aes_ctr_init(aes_ctx, &session->aes_key);
+    av_aes_ctr_set_iv(aes_ctx, &session->aes_iv);
+    uint8_t *src_buf = (uint8_t*) malloc(size);
+    memcpy(src_buf, buf, size);
+    av_aes_ctr_crypt(aes_ctx, buf, src_buf, size);
+    free(src_buf);
+    av_aes_ctr_free(aes_ctx);
+}
 
 /**
  * POSIX FS convenience layer to write the file straight forward
@@ -183,7 +314,7 @@ static int exmg_mqtt_client_send(char* message)
  */
 static int exmg_write_key_file(const char *filename, char *data, int append)
 {
-    av_log(NULL, AV_LOG_DEBUG, "exmg_write_key_file: %s\n", filename);
+    av_log(NULL, AV_LOG_INFO, "exmg_write_key_file: %s\n", filename);
 
     FILE *f;
     if (append) {
@@ -263,12 +394,17 @@ static void exmg_write_key_message(const char* message_buffer, MOVTrack* track, 
 static void exmg_key_message_queue_pop(MOVMuxContext *mov)
 {
     if (mov->nb_streams != 1) {
-        av_log(mov, AV_LOG_WARNING, "Track has %d tracks, but should have exactly 1.", mov->nb_streams);
+        av_log(mov, AV_LOG_WARNING, "Got %d streams, but should have exactly 1.", mov->nb_streams);
+        exit(1);
         return;
     }
 
-    ExmgKeySystemEncryptSession *session = mov->exmg_key_sys;
+    ExmgSecureSyncEncSession *session = mov->exmg_key_sys;
     MOVTrack* track = &mov->tracks[0];
+    if (track == NULL) {
+        av_log(mov, AV_LOG_WARNING, "Going to publish media-key, but default track is NULL !\n");
+        return;
+    }
 
     float media_time_secs = (float) track->frag_start / (float) track->timescale;
 
@@ -276,15 +412,19 @@ static void exmg_key_message_queue_pop(MOVMuxContext *mov)
 
     // pop message from queue with respect to delay set
     ff_mutex_lock(&session->queue_lock);
-    int32_t message_q_pop_index = session->messages_queue_pop_idx + 1;
-    char* message_buffer = session->messages_queue[message_q_pop_index];
-    int64_t message_media_time = session->messages_queue_media_time[message_q_pop_index];
-
-    if (message_buffer == NULL) {
-        //av_log(mov, AV_LOG_VERBOSE, "No key-messages to send!\n");
+    // queue empty
+    if (exmg_queue_is_empty(session->scope_info_queue)) {
+        av_log(mov, AV_LOG_VERBOSE, "No key-messages to send!\n");
         ff_mutex_unlock(&session->queue_lock);
         return;
     }
+
+    av_log(mov, AV_LOG_VERBOSE, "Peek queue\n");
+
+    // peek into it first to compare time on queue with media-time
+    ExmgSecureSyncScope *scope_info = exmg_queue_peek(session->scope_info_queue);
+    char* message_buffer = scope_info->media_key_message;
+    int64_t message_media_time = scope_info->media_time;
 
     float next_popable_message_media_time = (float) message_media_time / (float) track->timescale;
     float time_diff = media_time_secs - next_popable_message_media_time;
@@ -295,61 +435,37 @@ static void exmg_key_message_queue_pop(MOVMuxContext *mov)
 
     if (time_diff >= session->message_send_delay_secs) {
 
-        av_log(mov, AV_LOG_INFO, "(%s) EXMG key-message queue pop at media-time %.2f (delay-delta=%.2f) [s]\n",
+        // pop-off queue item we peeked before
+        // (this is safe as we kept the mutex locked)
+        exmg_queue_pop(session->scope_info_queue);
+        ff_mutex_unlock(&session->queue_lock);
+        // dipose of queue item
+        exmg_secure_sync_scope_dispose(scope_info);
+
+        av_log(mov, AV_LOG_INFO, "(%s) Publishing SecureSync key-message with:\nencryption-scope media-time=%.2f [s]\nat encoding-time=%.2f [s]\neffective key-publish-delay=%.2f [s]\n",
             av_get_media_type_string(track->par->codec_type),
             next_popable_message_media_time,
+            media_time_secs,
             time_diff);
 
-        session->messages_queue_pop_idx++;
-        ff_mutex_unlock(&session->queue_lock);
-
         if (!mov->exmg_key_system_mqtt_dry_run && getenv("FF_EXMG_KEYS_DRY_RUN") == NULL) {
-
-            //exmg_mqtt_client_send(message_buffer);
-
-            // we need the track info to create a unique indexable filename
+            // we need the passed track parameters to create a unique indexable resource name
             exmg_write_key_message(message_buffer, track, message_media_time);
 
         } else {
-            av_log(mov, AV_LOG_VERBOSE, "EXMG key-system dry-run, not sending.");
+            av_log(mov, AV_LOG_VERBOSE, "SecureSync dry-run, not sending.\n");
         }
 
         free(message_buffer); // free the buffer we malloc'd when put on the queue
 
     } else {
-        ff_mutex_unlock(&session->queue_lock);
 
-        av_log(mov, AV_LOG_VERBOSE, "(%s) EXMG key-message queue not pop'd, media-time difference is: %f secs\n",
+        av_log(mov, AV_LOG_VERBOSE, "(%s) SecureSync queue not pop'd, media-time difference is: %f secs\n",
             av_get_media_type_string(track->par->codec_type),
             time_diff);
+
+        ff_mutex_unlock(&session->queue_lock);
     }
-}
-
-static void exmg_store_key_and_iv(MOVMuxContext *mov) {
-    // TODO: generate proper 16-byte length key
-}
-
-static void exmg_encrypt_buffer_aes_ctr(ExmgKeySystemEncryptSession *session, uint8_t *buf, int size) {
-
-    // read short-key data
-    uint32_t media_encrypt_key;
-    uint32_t media_encrypt_iv;
-    memcpy(&media_encrypt_key, &session->aes_key, sizeof(media_encrypt_key));
-    memcpy(&media_encrypt_iv, &session->aes_iv, sizeof(media_encrypt_iv));
-
-    av_log(NULL, AV_LOG_VERBOSE, "Using key/iv pair to encrypt buffer (%d bytes): %u (0x%08X) / %u (0x%08X)\n",
-        size,
-        media_encrypt_key, media_encrypt_key,
-        media_encrypt_iv, media_encrypt_iv);
-
-    struct AVAESCTR *aes_ctx = av_aes_ctr_alloc();
-    av_aes_ctr_init(aes_ctx, &session->aes_key);
-    av_aes_ctr_set_iv(aes_ctx, &session->aes_iv);
-    uint8_t *src_buf = (uint8_t*) malloc(size);
-    memcpy(src_buf, buf, size);
-    av_aes_ctr_crypt(aes_ctx, buf, src_buf, size);
-    free(src_buf);
-    av_aes_ctr_free(aes_ctx);
 }
 
 /**
@@ -363,18 +479,23 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
     }
 
     if (mov->nb_streams > 1) {
-        av_log(mov, AV_LOG_ERROR, "EXMG key system does not support multiple tracks per DASH fragment! Exiting process.");
+        av_log(mov, AV_LOG_ERROR, "SecureSync does not support multiple tracks per DASH fragment! Exiting process.");
         exit(1); //
         return;
     }
 
     if (mov->nb_streams != 1) {
-        av_log(mov, AV_LOG_WARNING, "Track has %d tracks, but should have exactly 1.", mov->nb_streams);
+        av_log(mov, AV_LOG_WARNING, "Got %d streams, but should have exactly 1.", mov->nb_streams);
+        exit(1);
         return;
     }
 
-    ExmgKeySystemEncryptSession *session = mov->exmg_key_sys;
+    ExmgSecureSyncEncSession *session = mov->exmg_key_sys;
     MOVTrack* track = &mov->tracks[0];
+    if (track == NULL) {
+        av_log(mov, AV_LOG_WARNING, "Trying to push on queue, but default track is NULL !\n");
+        return;
+    }
 
     // generate new key when counter at zero
     if (session->key_frag_counter == 0) {
@@ -407,7 +528,8 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
     int64_t frag_duration = track->end_pts - track->frag_start;
 
     if (frag_duration == 0) { // Happens in LLS/streaming=1 mode for audio-type tracks
-        session->key_scope_duration = track->frag_start - session->key_scope_first_pts; // FIXME: This is a workaroudn, frag_duration should never be zero
+        // FIXME: This is a workaround, frag_duration should never be zero
+        session->key_scope_duration = track->frag_start - session->key_scope_first_pts;
     } else {
         session->key_scope_duration += frag_duration;
     }
@@ -475,29 +597,17 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
 
     // push the message for this fragment on the queue
     ff_mutex_lock(&session->queue_lock);
-
-    session->messages_queue_media_time[session->messages_queue_push_idx] = track->frag_start;
-    session->messages_queue[session->messages_queue_push_idx] = message_buffer;
-    session->messages_queue_push_idx++;
-
-    // handle push index overflow
-    if (session->messages_queue_push_idx >= EXMG_MESSAGE_QUEUE_SIZE) {
-        // catch edge condition: queue overflows without anything read yet
-        if (session->messages_queue_pop_idx == -1) {
-            av_log(mov, AV_LOG_ERROR, "EXMG key-message queue overflowed. The delay set is probably too high. Exiting process now.");
-            ff_mutex_unlock(&session->queue_lock);
-            exit(1);
-        }
-        // normal operation, allow write over queue in circular way
-        session->messages_queue_push_idx = 0;
-    }
-    // general case: queue is full when push index equals pop index
-    if (session->messages_queue_push_idx == session->messages_queue_pop_idx) {
-        av_log(mov, AV_LOG_ERROR, "EXMG key-message queue full. The delay set is probably too high. Exiting process now.");
+    if (exmg_queue_is_full(session->scope_info_queue)) {
+        av_log(mov, AV_LOG_ERROR, "SecureSync queue full. The delay set is probably too high. Exiting process now.");
         ff_mutex_unlock(&session->queue_lock);
         exit(1);
     }
 
+    av_log(mov, AV_LOG_VERBOSE, "(%s) Pushing on queue\n",
+        av_get_media_type_string(track->par->codec_type));
+
+    ExmgSecureSyncScope *scope_info = exmg_secure_sync_scope_new(message_buffer, track->frag_start);
+    exmg_queue_push(session->scope_info_queue, scope_info);
     ff_mutex_unlock(&session->queue_lock);
 
     av_log(mov, AV_LOG_VERBOSE,
@@ -510,18 +620,19 @@ static void exmg_key_message_queue_push(MOVMuxContext *mov, int tracks, int64_t 
 
 static void exmg_key_message_queue_worker(MOVMuxContext* mov)
 {
+    // FIXME: instead of a sleep, we should use cond/wait thread signaling here
+
     unsigned int delay = EXMG_KEY_QUEUE_WORKER_POLL * 1000000;
     while(1) {
-        //av_log(mov, AV_LOG_VERBOSE, "EXMG key-system worker job\n");
         exmg_key_message_queue_pop(mov);
         // reschedule
         av_usleep(delay);
     }
 }
 
-static void exmg_key_system_init(ExmgKeySystemEncryptSession **session_ptr, MOVMuxContext *parent) {
-    ExmgKeySystemEncryptSession *session = *session_ptr = malloc(sizeof(ExmgKeySystemEncryptSession));
-    memset(session, 0, sizeof(ExmgKeySystemEncryptSession));
+static void exmg_secure_sync_enc_session_init(ExmgSecureSyncEncSession **session_ptr, MOVMuxContext *parent) {
+    ExmgSecureSyncEncSession *session = *session_ptr = malloc(sizeof(ExmgSecureSyncEncSession));
+    memset(session, 0, sizeof(ExmgSecureSyncEncSession));
 
     char* message_send_delay = getenv("FF_EXMG_KEY_MESSAGE_SEND_DELAY");
     if (message_send_delay != NULL) {
@@ -542,20 +653,19 @@ static void exmg_key_system_init(ExmgKeySystemEncryptSession **session_ptr, MOVM
 
     session->key_scope_duration = 0;
     session->key_frag_counter = 0;
-
     session->key_id_counter = 0;
-    session->messages_queue_push_idx = 0;
-    session->messages_queue_pop_idx = -1;
 
-    memset(&session->messages_queue, 0, sizeof(session->messages_queue));
+    exmg_queue_init(&session->scope_info_queue, EXMG_MESSAGE_QUEUE_SIZE);
 
     ff_mutex_init(&session->queue_lock, NULL);
-    pthread_create(&session->queue_worker, NULL, exmg_key_message_queue_worker, parent);
+    pthread_create(&session->queue_worker, NULL, exmg_key_message_queue_worker, (void*) parent);
 
     av_log(parent, AV_LOG_INFO,
-        "Initialized EMXG key-system encrypt context. Send-delay=%f [s]; Fragments/Key=%d\n",
+        "Initialized SecureSync encode/encrypt context. Key-Publish-Delay=%f [s]; Fragments/Key=%d\n",
         session->message_send_delay_secs, session->fragments_per_key
     );
 
     srand(time(NULL));
 }
+
+// FIXME: also have deinit function

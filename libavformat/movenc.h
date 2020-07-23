@@ -241,7 +241,7 @@ typedef struct MOVMuxContext {
     int exmg_key_system_mqtt_enabled;
     int exmg_key_system_mqtt_dry_run;
 
-    struct ExmgKeySystemEncryptSession *exmg_key_sys;
+    struct ExmgSecureSyncEncSession *exmg_key_sys;
 
 } MOVMuxContext;
 
