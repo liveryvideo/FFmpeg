@@ -419,8 +419,6 @@ static void exmg_key_message_queue_pop(MOVMuxContext *mov)
         return;
     }
 
-    av_log(mov, AV_LOG_VERBOSE, "Peek queue\n");
-
     // peek into it first to compare time on queue with media-time
     ExmgSecureSyncScope *scope_info = exmg_queue_peek(session->scope_info_queue);
     char* message_buffer = scope_info->media_key_message;
