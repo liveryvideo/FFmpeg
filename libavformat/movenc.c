@@ -4618,18 +4618,6 @@ static int mov_write_prft_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks)
     return update_size(pb, pos);
 }
 
-static int mov_write_exmg_tag(AVIOContext *pb, MOVMuxContext *mov)
-{
-    av_log(mov, AV_LOG_VERBOSE, "Writing EXMG tag\n");
-
-    int64_t pos = avio_tell(pb);
-
-    avio_wb32(pb, 0);                           // Size place holder
-    ffio_wfourcc(pb, "exmg");                   // Type
-    // TODO add mapping of Frame-Ranges/Key-IDs inside segment
-    return update_size(pb, pos);
-}
-
 static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
                               int64_t mdat_size)
 {
