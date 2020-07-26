@@ -21,7 +21,7 @@ typedef struct ExmgQueue {
 */
 static void exmg_queue_init(ExmgQueue **queue_ptr, size_t size)
 {
-    ExmgQueue *queue = *queue_ptr = malloc(sizeof(ExmgQueue));
+    ExmgQueue *queue = *queue_ptr = (ExmgQueue*) malloc(sizeof(ExmgQueue));
     queue->head = 0;
     queue->tail = 0;
     queue->len = 0;

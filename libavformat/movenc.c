@@ -108,8 +108,6 @@ static const AVOption options[] = {
     { "wallclock", NULL, 0, AV_OPT_TYPE_CONST, {.i64 = MOV_PRFT_SRC_WALLCLOCK}, 0, 0, AV_OPT_FLAG_ENCODING_PARAM, "prft"},
     { "pts", NULL, 0, AV_OPT_TYPE_CONST, {.i64 = MOV_PRFT_SRC_PTS}, 0, 0, AV_OPT_FLAG_ENCODING_PARAM, "prft"},
     { "empty_hdlr_name", "write zero-length name string in hdlr atoms within mdia and minf atoms", offsetof(MOVMuxContext, empty_hdlr_name), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, AV_OPT_FLAG_ENCODING_PARAM},
-    { "exmg_key_system_mqtt", "enable exmg MQTT delivered media key system", offsetof(MOVMuxContext, exmg_key_system_mqtt_enabled), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, AV_OPT_FLAG_ENCODING_PARAM},
-    { "exmg_key_system_dry_run", "enable exmg MQTT delivered media key system", offsetof(MOVMuxContext, exmg_key_system_mqtt_dry_run), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, AV_OPT_FLAG_ENCODING_PARAM},
     { NULL },
 };
 
@@ -4636,12 +4634,9 @@ static int mov_write_moof_tag(AVIOContext *pb, MOVMuxContext *mov, int tracks,
     if (mov->write_prft > MOV_PRFT_NONE && mov->write_prft < MOV_PRFT_NB)
         mov_write_prft_tag(pb, mov, tracks);
 
-    #if 1
-    if (mov->exmg_key_system_mqtt_enabled || getenv("FF_EXMG_KEYS_MQTT") != NULL) {
-        //av_log(mov, AV_LOG_VERBOSE, "EXMG key system enabled, DASH MOOF with %d tracks, and %ld bytes of mdat\n", tracks, mdat_size);
-        exmg_key_message_queue_push(mov, mov->nb_streams, mdat_size);
+    if (mov->exmg_key_sys) {
+        exmg_secure_sync_on_fragment(mov->exmg_key_sys);
     }
-    #endif
 
     if (mov->flags & FF_MOV_FLAG_GLOBAL_SIDX ||
         !(mov->flags & FF_MOV_FLAG_SKIP_TRAILER) ||
@@ -5208,9 +5203,7 @@ static int mov_flush_fragment(AVFormatContext *s, int force)
             mov->mdat_buf = NULL;
         }
 
-        // enables/disables encryption
-        ///*
-        if (getenv("FF_EXMG_KEY_ENCRYPT_ON") != NULL) {
+        if (mov->exmg_key_sys && mov->exmg_key_sys->is_encryption_enabled) {
             av_log(mov, AV_LOG_VERBOSE, "(%s) Encrypting %d bytes of payload @ %p \n",
                 av_get_media_type_string(track->par->codec_type),
                 buf_size,
@@ -5218,7 +5211,6 @@ static int mov_flush_fragment(AVFormatContext *s, int force)
             );
             exmg_encrypt_buffer_aes_ctr(mov->exmg_key_sys, buf, buf_size);
         }
-        //*/
 
         avio_write(s->pb, buf, buf_size);
         av_free(buf);
@@ -6219,7 +6211,11 @@ static int mov_init(AVFormatContext *s)
     if (!mov->tracks)
         return AVERROR(ENOMEM);
 
-    exmg_secure_sync_enc_session_init(&mov->exmg_key_sys, mov);
+    if (getenv("FF_EXMG_SECURE_SYNC_ON") != NULL) {
+        exmg_secure_sync_enc_session_init(&mov->exmg_key_sys, mov);
+    } else {
+        mov->exmg_key_sys = NULL;
+    }
 
     if (mov->encryption_scheme_str != NULL && strcmp(mov->encryption_scheme_str, "none") != 0) {
         if (strcmp(mov->encryption_scheme_str, "cenc-aes-ctr") == 0) {

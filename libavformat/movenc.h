@@ -238,9 +238,6 @@ typedef struct MOVMuxContext {
     MOVPrftBox write_prft;
     int empty_hdlr_name;
 
-    int exmg_key_system_mqtt_enabled;
-    int exmg_key_system_mqtt_dry_run;
-
     struct ExmgSecureSyncEncSession *exmg_key_sys;
 
 } MOVMuxContext;
