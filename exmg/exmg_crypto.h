@@ -1,5 +1,7 @@
 #pragma once
 
+#include "libavutil/aes_ctr.h"
+
 #include "exmg_secure_sync_structs.h"
 
 static void exmg_encrypt_buffer_aes_ctr(ExmgSecureSyncEncSession *session, uint8_t *buf, int size) {
