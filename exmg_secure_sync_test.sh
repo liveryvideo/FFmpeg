@@ -15,12 +15,12 @@ export video_bitrate="800k"
 export audio_bitrate="128k"
 export output_resolution="640x480"
 export input="Spring.mp4"
-export event_name="stephan"
 
 sub_folder="$(date +%s)"
 
 export output=tmp
 
+mkdir -p $output
 rm -Rf $output/*
 mkdir -p $output/$sub_folder
 
@@ -33,9 +33,14 @@ export FF_EXMG_SECURE_SYNC_FS_PUB_BASEPATH=$output/ # ending slash is mandatory 
 export FF_EXMG_SECURE_SYNC_MESSAGE_SEND_DELAY="20" # seconds (float)
 export FF_EXMG_SECURE_SYNC_FRAGMENTS_PER_KEY="30" # amount (int)
 
-echo "\n$output\n"
+echo ""
+echo "Output path: $output"
+echo ""
 
 export log_level="info" # quiet / info / error / debug / verbose
+
+media_segment_filename='segment_$RepresentationID$-$Number%05d$.m4s'
+init_segment_filename='init_$RepresentationID$.m4s'
 
 ./ffmpeg \
        -loglevel repeat+level+$log_level \
@@ -64,8 +69,8 @@ export log_level="info" # quiet / info / error / debug / verbose
        -index_correction 1 \
        -http_persistent 1 \
        -ignore_io_errors 1\
-       -media_seg_name  $sub_folder'/segment_$RepresentationID$-$Number%05d$.m4s' \
-       -init_seg_name  $sub_folder'/init_$RepresentationID$.m4s' \
+       -media_seg_name  $sub_folder'/'$media_segment_filename \
+       -init_seg_name  $sub_folder'/'$init_segment_filename \
        -hls_playlist 1 \
        -window_size $window_size_in_segments \
        -extra_window_size $window_extra_segments \
