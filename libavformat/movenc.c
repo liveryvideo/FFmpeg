@@ -59,7 +59,7 @@
 #include "mov_chan.h"
 #include "vpcc.h"
 
-#include "movenc_exmg_key_system.h"
+#include "exmg/exmg_secure_sync.h"
 
 static const AVOption options[] = {
     { "movflags", "MOV muxer flags", offsetof(MOVMuxContext, flags), AV_OPT_TYPE_FLAGS, {.i64 = 0}, INT_MIN, INT_MAX, AV_OPT_FLAG_ENCODING_PARAM, "movflags" },
