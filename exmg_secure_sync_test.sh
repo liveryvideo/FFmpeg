@@ -24,12 +24,14 @@ export output=tmp
 rm -Rf $output/*
 mkdir -p $output/$sub_folder
 
-export FF_EXMG_KEYS_MQTT=1
+export FF_EXMG_SECURE_SYNC_ON=0
+export FF_EXMG_SECURE_SYNC_DRY_RUN=0
+export FF_EXMG_SECURE_SYNC_NO_ENCRYPTION=0 # any non-empty string -> true
 
-export FF_EXMG_KEY_ENCRYPT_ON=1 # any non-empty string true
-export FF_EXMG_KEY_FILE_OUT=$output/ # ending slash is mandatory (or empty string "")
-export FF_EXMG_KEY_MESSAGE_SEND_DELAY="0" # seconds (float)
-export FF_EXMG_KEY_SCOPE_NB_OF_FRAGMENTS="30" # amount (int)
+export FF_EXMG_SECURE_SYNC_MQTT_PUB=1
+export FF_EXMG_SECURE_SYNC_FS_PUB_BASEPATH=$output/ # ending slash is mandatory (or empty string "")
+export FF_EXMG_SECURE_SYNC_MESSAGE_SEND_DELAY="20" # seconds (float)
+export FF_EXMG_SECURE_SYNC_FRAGMENTS_PER_KEY="30" # amount (int)
 
 echo "\n$output\n"
 
