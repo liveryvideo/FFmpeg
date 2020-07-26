@@ -1,6 +1,6 @@
 /**
  * @author Stephan Hesse <stephan@emliri.com>
- * 
+ *
  * */
 
 #pragma once
@@ -50,7 +50,7 @@ static void exmg_mqtt_pub_context_init(ExmgMqttPubContext **ptr, ExmgMqttPubConf
     opts.MQTTVersion = MQTT_VERSION;
 
     int rc = MQTTClient_createWithOptions(&s->client, s->server_uri,
-        config.client_id, 
+        config.client_id,
             MQTTCLIENT_PERSISTENCE_NONE, NULL, // Q: what does this do/not do ?
                 &opts);
 
