@@ -39,15 +39,15 @@ static void exmg_secure_sync_scope_dispose(ExmgSecureSyncScope* sync_scope_info)
     free(sync_scope_info);
 }
 
-static void exmg_secure_sync_poll_publish_next(MOVMuxContext *mov)
+static void exmg_secure_sync_poll_publish_next(ExmgSecureSyncEncSession *session)
 {
+    MOVMuxContext *mov = session->mov;
     if (mov->nb_streams != 1) {
         av_log(mov, AV_LOG_WARNING, "Got %d streams, but should have exactly 1.", mov->nb_streams);
         exit(1);
         return;
     }
 
-    ExmgSecureSyncEncSession *session = mov->exmg_key_sys;
     MOVTrack* track = &mov->tracks[0];
     if (track == NULL) {
         av_log(mov, AV_LOG_WARNING, "Going to publish media-key, but default track is NULL !\n");
@@ -258,16 +258,19 @@ static void exmg_secure_sync_on_fragment(ExmgSecureSyncEncSession *session)
 
 }
 
-static void exmg_key_message_queue_worker(ExmgSecureSyncEncSession *s)
+static void* exmg_secure_sync_worker(void *user_data)
 {
+    ExmgSecureSyncEncSession *s = (ExmgSecureSyncEncSession*) user_data;
+
     // FIXME: instead of a sleep, we should use cond/wait thread signaling here
 
     unsigned int delay = EXMG_MESSAGE_QUEUE_WORKER_POLL * 1000000;
     while(1) {
-        exmg_secure_sync_poll_publish_next(s->mov);
+        exmg_secure_sync_poll_publish_next(s);
         // reschedule
         av_usleep(delay);
     }
+    return NULL;
 }
 
 static void exmg_secure_sync_enc_session_init(ExmgSecureSyncEncSession **session_ptr, MOVMuxContext *mov) {
@@ -313,18 +316,25 @@ static void exmg_secure_sync_enc_session_init(ExmgSecureSyncEncSession **session
 
     exmg_queue_init(&session->scope_info_queue, EXMG_MESSAGE_QUEUE_SIZE);
 
-    for (int result = 0
-            || ff_mutex_init(&session->queue_lock, NULL)
-            || pthread_create(&session->queue_worker, NULL, (void *(*)(void*)) exmg_key_message_queue_worker, (void*) session);
-                !result;) {
-        av_log(mov, AV_LOG_ERROR, "Mutex/Thread creation returned error-code (%d), failed to launch queue worker", result);
+    {
+        int result;
+        result = ff_mutex_init(&session->queue_lock, NULL);
+        if (result != 0) goto pthread_fail;
+        result = pthread_create(&session->queue_worker, NULL, exmg_secure_sync_worker, (void*) session);
+        if (result != 0) goto pthread_fail;
+        if (result == 0) goto pthread_ok;
+    pthread_fail:
+        av_log(mov, AV_LOG_ERROR, "Mutex/Thread creation returned error-code (%d), failed to launch queue worker\n", result);
         free(session);
         return;
+    pthread_ok:
+        ;
     }
 
     av_log(mov, AV_LOG_INFO,
-        "Initialized SecureSync encode/encrypt context. Key-Publish-Delay=%0.2f [s]; Fragments/Key=%d\n",
-        session->message_send_delay_secs, session->fragments_per_key
+        "Initialized SecureSync encode/encrypt context. Key-Publish-Delay=%0.3f [s]; Fragments-per-Key=%u\n",
+        session->message_send_delay_secs,
+        session->fragments_per_key
     );
 
     *session_ptr = session;
