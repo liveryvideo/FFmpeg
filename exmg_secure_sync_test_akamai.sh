@@ -26,20 +26,25 @@ export output="https://p-ep$stream_id.i.akamaientrypoint.net/cmaf/$stream_id/$ev
 
 export mpd_url="https://exmachina-ull-demo.akamaized.net/cmaf/live/$stream_id/$event_name/out.mpd"
 
-rm -Rf tmp/*
-mkdir -p tmp/$sub_folder
+export key_output="tmp"
+
+rm -Rf $key_output
+mkdir -p $key_output
 
 export FF_EXMG_SECURE_SYNC_ON=0
 export FF_EXMG_SECURE_SYNC_DRY_RUN=0
 export FF_EXMG_SECURE_SYNC_NO_ENCRYPTION=0 # any non-empty string -> true
 
 export FF_EXMG_SECURE_SYNC_MQTT_PUB=1
-export FF_EXMG_SECURE_SYNC_FS_PUB_BASEPATH=$output/ # ending slash is mandatory (or empty string "")
+export FF_EXMG_SECURE_SYNC_FS_PUB_BASEPATH=$key_output/ # ending slash is mandatory (or empty string "")
 export FF_EXMG_SECURE_SYNC_MESSAGE_SEND_DELAY="20" # seconds (float)
 export FF_EXMG_SECURE_SYNC_FRAGMENTS_PER_KEY="30" # amount (int)
 
 echo "Publishing to: $output and sub-directory: $sub_folder"
 echo "MPD available at: $mpd_url"
+echo ""
+echo "Key-pub fs-path: $key_output"
+echo ""
 
 export log_level="info" # quiet / error / debug / verbose
 
