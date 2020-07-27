@@ -290,7 +290,9 @@ static void exmg_secure_sync_enc_session_init(ExmgSecureSyncEncSession **session
     if (getenv("FF_EXMG_SECURE_SYNC_MQTT_PUB") != NULL) {
         ExmgMqttPubConfig mqtt_config = mqttSrvInfo.pubConf;
         exmg_mqtt_pub_context_init(&session->mqtt_pub_ctx, mqttSrvInfo.url, mqtt_config);
-        exmg_mqtt_pub_connect(session->mqtt_pub_ctx);
+        if (!session->mqtt_pub_ctx->is_connected) {
+            exmg_mqtt_pub_connect(session->mqtt_pub_ctx);
+        }
     }
 
     char* message_send_delay = getenv("FF_EXMG_SECURE_SYNC_MESSAGE_SEND_DELAY");

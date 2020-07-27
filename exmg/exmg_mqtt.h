@@ -90,37 +90,37 @@ static void exmg_mqtt_pub_context_init(ExmgMqttPubContext **ptr, const char* url
 
     if (rc != MQTTCLIENT_SUCCESS)
     {
-        av_log(NULL, AV_LOG_ERROR, "MQTTClient_createWithOptions failed\n");
+        av_log(NULL, AV_LOG_ERROR, "MQTTClient_createWithOptions failed with context @ %p\n", ctx);
         free(ctx);
         *ptr = NULL;
         return;
     }
 
-    av_log(NULL, AV_LOG_INFO, "MQTTClient_createWithOptions success with handle @ %p\n", ctx->client);
-    c.ctxs[(*c.ctxs_next_idx)++] = ctx;
-    *ptr = ctx;
+    av_log(NULL, AV_LOG_INFO, "MQTTClient_createWithOptions(%p) success with context @ %p\n", ctx->client, ctx);
+
+    c.ctxs[(*c.ctxs_next_idx)++] = *ptr = ctx;
 }
 
 static void exmg_mqtt_pub_context_deinit(ExmgMqttPubContext **ptr) {
     ExmgMqttPubContext* ctx = *ptr;
-    if (ctx->is_connected) {
+    if (ctx->is_connected && MQTTClient_isConnected(ctx->client)) {
         int rc = MQTTClient_disconnect(ctx->client, MQTT_CLIENT_DISCONNECT_TIMEOUT_MS);
         if (rc != MQTTCLIENT_SUCCESS) {
             av_log(NULL, AV_LOG_ERROR, "MQTTClient_disconnect failed\n");
             return;
         }
+        ctx->is_connected = 0;
     }
-
     MQTTClient_destroy(&ctx->client);
     free(ctx);
     *ptr = NULL;
 }
 
-static int exmg_mqtt_pub_connect(ExmgMqttPubContext *s)
+static int exmg_mqtt_pub_connect(ExmgMqttPubContext *ctx)
 {
-    if (s->is_connected) {
-        av_log(NULL, AV_LOG_WARNING, "exmg_mqtt_client_connect: already connected to: %s\n", s->server_uri);
-        return s->is_connected;
+    if (ctx->is_connected) {
+        av_log(NULL, AV_LOG_WARNING, "exmg_mqtt_pub_connect(%p) called but already connected to: %s\n", ctx, ctx->server_uri);
+        return ctx->is_connected;
     }
 
     MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
@@ -131,7 +131,7 @@ static int exmg_mqtt_pub_connect(ExmgMqttPubContext *s)
     conn_opts.cleansession = 1;
 
     MQTTClient_SSLOptions ssl_opts = MQTTClient_SSLOptions_initializer;
-    if (s->is_tls)
+    if (ctx->is_tls)
     {
         ssl_opts.verify = 1;
         ssl_opts.CApath = NULL;
@@ -143,34 +143,44 @@ static int exmg_mqtt_pub_connect(ExmgMqttPubContext *s)
         conn_opts.ssl = &ssl_opts;
     }
 
-    av_log(NULL, AV_LOG_INFO, "Calling MQTTClient_connect with handle @ %p ...\n", s->client);
+    av_log(NULL, AV_LOG_INFO, "Calling MQTTClient_connect with handle @ %p ...\n", ctx->client);
 
-    int rc = MQTTClient_connect(s->client, &conn_opts);
+    int rc = MQTTClient_connect(ctx->client, &conn_opts);
     if (rc == MQTTCLIENT_SUCCESS) {
-        av_log(NULL, AV_LOG_INFO, "MQTTClient_connect success to: %s\n", s->server_uri);
-        s->is_connected = 1;
+        av_log(NULL, AV_LOG_INFO, "MQTTClient_connect success to: %s\n", ctx->server_uri);
+        ctx->is_connected = 1;
     } else {
-        av_log(NULL, AV_LOG_ERROR, "MQTTClient_connect failed (error-code=%d) to: %s\n ", rc, s->server_uri);
-        s->is_connected = 0;
+        av_log(NULL, AV_LOG_ERROR, "MQTTClient_connect failed (error-code=%d) to: %s\n ", rc, ctx->server_uri);
+        ctx->is_connected = 0;
     }
-    return s->is_connected;
+    return ctx->is_connected;
 }
 
-static int exmg_mqtt_pub_send(ExmgMqttPubContext *s, uint8_t* message_data, int message_length)
+static int exmg_mqtt_pub_send(ExmgMqttPubContext *ctx, uint8_t* message_data, int message_length, int retry_counter)
 {
-    if (!s->is_connected && exmg_mqtt_pub_connect(s) != MQTTCLIENT_SUCCESS) {
-        av_log(NULL, AV_LOG_ERROR, "exmg_mqtt_client_connect failed\n");
+    if (retry_counter == 0) {
+        av_log(NULL, AV_LOG_ERROR, "exmg_mqtt_pub_send(%p, %p): abandoning retrials, permanently failed", ctx, message_data);
         return 0;
+    } else if (retry_counter < 0) {
+        retry_counter = 3;
     }
 
-    int rc = MQTTClient_publish(s->client, s->config.topic, message_length, message_data, 0, 0, NULL);
+    if (!ctx->is_connected && exmg_mqtt_pub_connect(ctx) != MQTTCLIENT_SUCCESS) {
+        av_log(NULL, AV_LOG_ERROR, "exmg_mqtt_pub_connect(%p) failed, retry-counter = %d \n", ctx, retry_counter);
+        return exmg_mqtt_pub_send(ctx, message_data, message_length, --retry_counter);
+    }
+
+    int rc = MQTTClient_publish(ctx->client, ctx->config.topic, message_length, message_data, 0, 0, NULL);
     if (rc != MQTTCLIENT_SUCCESS)
     {
-        av_log(NULL, AV_LOG_ERROR, "MQTTClient_publish failed\n");
-        return 0;
+        av_log(NULL, AV_LOG_ERROR,
+            "MQTTClient_publish on context @ %p failed (error-code = %d), retry-counter = %d\n", ctx, rc, retry_counter);
+        ctx->is_connected = 0; // try to reconnect
+        return exmg_mqtt_pub_send(ctx, message_data, message_length, --retry_counter);
     }
 
-    av_log(NULL, AV_LOG_DEBUG, "exmg_mqtt_client_send: published message data @ %p (length = %d bytes)\n", message_data, message_length);
+    av_log(NULL, AV_LOG_DEBUG,
+        "exmg_mqtt_client_send(%p): published message data @ %p (length = %d bytes)\n", ctx, message_data, message_length);
 
     return 1;
 }
