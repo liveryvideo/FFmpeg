@@ -285,9 +285,11 @@ static void exmg_secure_sync_enc_session_init(ExmgSecureSyncEncSession **session
 
     session->fs_pub_basepath = getenv("FF_EXMG_SECURE_SYNC_FS_PUB_BASEPATH");
 
+    ExmgMqttServiceInfo mqttSrvInfo = EXMG_MQTT_SERVICE_INFO_DEFAULT_INIT;
+
     if (getenv("FF_EXMG_SECURE_SYNC_MQTT_PUB") != NULL) {
-        ExmgMqttPubConfig mqtt_config = EXMG_MQTT_PUB_CONFIG_DEFAULT_INIT;
-        exmg_mqtt_pub_context_init(&session->mqtt_pub_ctx, mqtt_config);
+        ExmgMqttPubConfig mqtt_config = mqttSrvInfo.pubConf;
+        exmg_mqtt_pub_context_init(&session->mqtt_pub_ctx, mqttSrvInfo.url, mqtt_config);
         exmg_mqtt_pub_connect(session->mqtt_pub_ctx);
     }
 

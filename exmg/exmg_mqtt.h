@@ -22,62 +22,97 @@
 #define EXMG_MQTT_TOPIC "joep/test"
 
 typedef struct ExmgMqttPubConfig {
-    const char* url;
     const char* client_id;
     const char* user;
     const char* passwd;
     const char* topic;
 } ExmgMqttPubConfig;
 
-#define EXMG_MQTT_PUB_CONFIG_DEFAULT_INIT {EXMG_MQTT_URL, EXMG_MQTT_CLIENTID, EXMG_MQTT_USERNAME, EXMG_MQTT_PASSWD, EXMG_MQTT_TOPIC}
+typedef struct ExmgMqttServiceInfo {
+    const char* url;
+    ExmgMqttPubConfig pubConf;
+} ExmgMqttServiceInfo;
+
+#define EXMG_MQTT_PUB_CONFIG_DEFAULT_INIT {EXMG_MQTT_CLIENTID, EXMG_MQTT_USERNAME, EXMG_MQTT_PASSWD, EXMG_MQTT_TOPIC}
+#define EXMG_MQTT_SERVICE_INFO_DEFAULT_INIT {EXMG_MQTT_URL, EXMG_MQTT_PUB_CONFIG_DEFAULT_INIT}
 
 typedef struct ExmgMqttPubContext {
-    ExmgMqttPubConfig config;
-    MQTTClient client;
     const char *server_uri;
-    int is_connected;
+    ExmgMqttPubConfig config;
     int is_tls;
+    int is_connected;
+    MQTTClient client;
 } ExmgMqttPubContext;
 
-static void exmg_mqtt_pub_context_init(ExmgMqttPubContext **ptr, ExmgMqttPubConfig config) {
+typedef struct ExmgMqttPubContextCollection {
+    ExmgMqttPubContext** ctxs;
+    size_t *ctxs_next_idx;
+    size_t ctxs_size;
+} ExmgMqttPubContextCollection;
 
-    ExmgMqttPubContext *s = (ExmgMqttPubContext*) malloc(sizeof(ExmgMqttPubContext));
-    s->config = config;
-    s->is_tls = strncmp(config.url, "ssl://", 6) == 0 || strncmp(config.url, "wss://", 6) == 0;
-    s->server_uri = config.url;
+static ExmgMqttPubContextCollection exmg_mqtt_get_pub_contexts() {
+    static ExmgMqttPubContext* ctx_ptrs[0xFF];
+    static size_t ctx_ptrs_idx = 0;
+    ExmgMqttPubContextCollection c = {ctx_ptrs, &ctx_ptrs_idx, sizeof(ctx_ptrs)};
+    return c;
+}
+
+static void exmg_mqtt_pub_context_init(ExmgMqttPubContext **ptr, const char* url, ExmgMqttPubConfig config) {
+
+    ExmgMqttPubContextCollection c = exmg_mqtt_get_pub_contexts();
+    for (size_t i = 0; i < *c.ctxs_next_idx; i++) {
+        ExmgMqttPubContext *existing_ctx = c.ctxs[i];
+        if (strcmp(existing_ctx->server_uri, url) == 0
+            && (existing_ctx->config.topic == config.topic)
+            && (existing_ctx->config.client_id == config.client_id)) {
+            av_log(NULL, AV_LOG_INFO,
+                "Reusing existing MQTT pub context @ %p for server URL (matching config): %s\n", existing_ctx, url);
+            *ptr = existing_ctx;
+            return;
+        }
+    }
+
+    ExmgMqttPubContext *ctx = (ExmgMqttPubContext*) malloc(sizeof(ExmgMqttPubContext));
+
+    ctx->server_uri = url;
+    ctx->config = config;
+    ctx->is_tls = strncmp(url, "ssl://", 6) == 0 || strncmp(url, "wss://", 6) == 0;
+    ctx->is_connected = 0;
 
     MQTTClient_createOptions opts = MQTTClient_createOptions_initializer;
     opts.MQTTVersion = MQTT_VERSION;
 
-    int rc = MQTTClient_createWithOptions(&s->client, s->server_uri,
-        config.client_id,
-            MQTTCLIENT_PERSISTENCE_NONE, NULL, // Q: what does this do/not do ?
-                &opts);
+    int rc = MQTTClient_createWithOptions(&ctx->client,
+        ctx->server_uri,
+            config.client_id,
+                MQTTCLIENT_PERSISTENCE_NONE, NULL, // Q: what does this do/not do ?
+                    &opts);
 
     if (rc != MQTTCLIENT_SUCCESS)
     {
         av_log(NULL, AV_LOG_ERROR, "MQTTClient_createWithOptions failed\n");
-        free(s);
+        free(ctx);
+        *ptr = NULL;
         return;
     }
 
-    av_log(NULL, AV_LOG_INFO, "Created MQTT publish context with client handle: %p / %p\n", s->client, &s->client);
-
-    *ptr = s;
+    av_log(NULL, AV_LOG_INFO, "MQTTClient_createWithOptions success with handle @ %p\n", ctx->client);
+    c.ctxs[(*c.ctxs_next_idx)++] = ctx;
+    *ptr = ctx;
 }
 
 static void exmg_mqtt_pub_context_deinit(ExmgMqttPubContext **ptr) {
-    ExmgMqttPubContext* s = *ptr;
-    if (s->is_connected) {
-        int rc = MQTTClient_disconnect(s->client, MQTT_CLIENT_DISCONNECT_TIMEOUT_MS);
+    ExmgMqttPubContext* ctx = *ptr;
+    if (ctx->is_connected) {
+        int rc = MQTTClient_disconnect(ctx->client, MQTT_CLIENT_DISCONNECT_TIMEOUT_MS);
         if (rc != MQTTCLIENT_SUCCESS) {
             av_log(NULL, AV_LOG_ERROR, "MQTTClient_disconnect failed\n");
             return;
         }
     }
 
-    MQTTClient_destroy(&s->client);
-
+    MQTTClient_destroy(&ctx->client);
+    free(ctx);
     *ptr = NULL;
 }
 
@@ -108,7 +143,7 @@ static int exmg_mqtt_pub_connect(ExmgMqttPubContext *s)
         conn_opts.ssl = &ssl_opts;
     }
 
-    av_log(NULL, AV_LOG_INFO, "MQTTClient_connect with handle: %p / %p\n", s->client, &s->client);
+    av_log(NULL, AV_LOG_INFO, "Calling MQTTClient_connect with handle @ %p ...\n", s->client);
 
     int rc = MQTTClient_connect(s->client, &conn_opts);
     if (rc == MQTTCLIENT_SUCCESS) {
@@ -121,21 +156,21 @@ static int exmg_mqtt_pub_connect(ExmgMqttPubContext *s)
     return s->is_connected;
 }
 
-static int exmg_mqtt_pub_send(ExmgMqttPubContext *s, uint8_t* message, int message_length)
+static int exmg_mqtt_pub_send(ExmgMqttPubContext *s, uint8_t* message_data, int message_length)
 {
     if (!s->is_connected && exmg_mqtt_pub_connect(s) != MQTTCLIENT_SUCCESS) {
         av_log(NULL, AV_LOG_ERROR, "exmg_mqtt_client_connect failed\n");
         return 0;
     }
 
-    int rc = MQTTClient_publish(s->client, s->config.topic, message_length, message, 0, 0, NULL);
+    int rc = MQTTClient_publish(s->client, s->config.topic, message_length, message_data, 0, 0, NULL);
     if (rc != MQTTCLIENT_SUCCESS)
     {
         av_log(NULL, AV_LOG_ERROR, "MQTTClient_publish failed\n");
         return 0;
     }
 
-    av_log(NULL, AV_LOG_DEBUG, "exmg_mqtt_client_send: published message: %s\n", message);
+    av_log(NULL, AV_LOG_DEBUG, "exmg_mqtt_client_send: published message data @ %p (length = %d bytes)\n", message_data, message_length);
 
     return 1;
 }
