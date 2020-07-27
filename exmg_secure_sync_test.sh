@@ -2,6 +2,7 @@
 
 # Bash setup (exit on error)
 set -e
+#set -x
 
 export stream_id=664379
 export segment_size_in_seconds=1
@@ -24,13 +25,13 @@ mkdir -p $output
 rm -Rf $output/*
 mkdir -p $output/$sub_folder
 
-export FF_EXMG_SECURE_SYNC_ON=0
-export FF_EXMG_SECURE_SYNC_DRY_RUN=0
-export FF_EXMG_SECURE_SYNC_NO_ENCRYPTION=0 # any non-empty string -> true
+export FF_EXMG_SECURE_SYNC_ON=""
+#export FF_EXMG_SECURE_SYNC_DRY_RUN=""
+#export FF_EXMG_SECURE_SYNC_NO_ENCRYPTION="" 
 
-export FF_EXMG_SECURE_SYNC_MQTT_PUB=1
-export FF_EXMG_SECURE_SYNC_FS_PUB_BASEPATH=$output/ # ending slash is mandatory (or empty string "")
-export FF_EXMG_SECURE_SYNC_MESSAGE_SEND_DELAY="20" # seconds (float)
+export FF_EXMG_SECURE_SYNC_MQTT_PUB=1 # anything set will enable MQTT key-pub
+export FF_EXMG_SECURE_SYNC_FS_PUB_BASEPATH=$output/ # ending slash is mandatory (or empty string "") / unset to disable fs key-pub 
+export FF_EXMG_SECURE_SYNC_MESSAGE_SEND_DELAY="5" # seconds (float)
 export FF_EXMG_SECURE_SYNC_FRAGMENTS_PER_KEY="30" # amount (int)
 
 echo ""
@@ -42,14 +43,15 @@ export log_level="info" # quiet / info / error / debug / verbose
 media_segment_filename='segment_$RepresentationID$-$Number%05d$.m4s'
 init_segment_filename='init_$RepresentationID$.m4s'
 
+#media_segment_filename='segment.m4s'
+#init_segment_filename='init.m4s'
+
 ./ffmpeg \
        -loglevel repeat+level+$log_level \
        -re -i $input \
        -flags +global_header \
        -r $frame_rate_num/$frame_rate_den \
        -af aresample=async=1 \
-       -c:v libx264 \
-       -preset medium \
        -vf "settb=AVTB,\
               setpts='trunc(PTS/1K)*1K+st(1,trunc(RTCTIME/1K))-1K*trunc(ld(1)/1K)', \
               drawtext=rate=30:text='%{localtime}.%{eif\:1M*t-1K*trunc(t*1K)\:d}:' \
@@ -60,7 +62,6 @@ init_segment_filename='init_$RepresentationID$.m4s'
        -sc_threshold 0 \
        -force_key_frames "expr:gte(t,n_forced*"$segment_size_in_seconds")" \
        -bf 0 \
-       -x264opts scenecut=-1:rc_lookahead=0 \
        -c:a aac \
        -b:a $audio_bitrate \
        -seg_duration $segment_size_in_seconds \

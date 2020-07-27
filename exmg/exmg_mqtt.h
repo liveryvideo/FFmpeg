@@ -30,7 +30,7 @@ typedef struct ExmgMqttPubConfig {
 
 typedef struct ExmgMqttServiceInfo {
     const char* url;
-    ExmgMqttPubConfig pubConf;
+    ExmgMqttPubConfig pub_conf;
 } ExmgMqttServiceInfo;
 
 #define EXMG_MQTT_PUB_CONFIG_DEFAULT_INIT {EXMG_MQTT_CLIENTID, EXMG_MQTT_USERNAME, EXMG_MQTT_PASSWD, EXMG_MQTT_TOPIC}
@@ -156,7 +156,7 @@ static int exmg_mqtt_pub_connect(ExmgMqttPubContext *ctx)
     return ctx->is_connected;
 }
 
-static int exmg_mqtt_pub_send(ExmgMqttPubContext *ctx, uint8_t* message_data, int message_length, int retry_counter)
+static int exmg_mqtt_pub_send(ExmgMqttPubContext *ctx, const uint8_t* message_data, int message_length, int retry_counter)
 {
     if (retry_counter == 0) {
         av_log(NULL, AV_LOG_ERROR, "exmg_mqtt_pub_send(%p, %p): abandoning retrials, permanently failed", ctx, message_data);
@@ -179,7 +179,7 @@ static int exmg_mqtt_pub_send(ExmgMqttPubContext *ctx, uint8_t* message_data, in
         return exmg_mqtt_pub_send(ctx, message_data, message_length, --retry_counter);
     }
 
-    av_log(NULL, AV_LOG_DEBUG,
+    av_log(NULL, AV_LOG_INFO,
         "exmg_mqtt_client_send(%p): published message data @ %p (length = %d bytes)\n", ctx, message_data, message_length);
 
     return 1;

@@ -50,7 +50,7 @@ static void exmg_secure_sync_poll_publish_next(ExmgSecureSyncEncSession *session
 
     MOVTrack* track = &mov->tracks[0];
     if (track == NULL) {
-        av_log(mov, AV_LOG_WARNING, "Going to publish media-key, but default track is NULL !\n");
+        av_log(mov, AV_LOG_WARNING, "Going to publish media-key, but default track is NULL (maybe shutting down)\n");
         return;
     }
 
@@ -69,7 +69,7 @@ static void exmg_secure_sync_poll_publish_next(ExmgSecureSyncEncSession *session
 
     // peek into it first to compare time on queue with media-time
     ExmgSecureSyncScope *scope_info = (ExmgSecureSyncScope*) exmg_queue_peek(session->scope_info_queue);
-    uint8_t* message_buffer = scope_info->media_key_message;
+    char* message_buffer = scope_info->media_key_message;
     int64_t message_media_time = scope_info->media_time;
 
     float next_popable_message_media_time = (float) message_media_time / (float) track->timescale;
@@ -95,10 +95,15 @@ static void exmg_secure_sync_poll_publish_next(ExmgSecureSyncEncSession *session
             time_diff);
 
         if (session->is_dry_run) {
-            av_log(mov, AV_LOG_VERBOSE, "SecureSync dry-run, not publishing anything.\n");
+            av_log(mov, AV_LOG_WARNING, "SecureSync dry-run, not really publishing anything.\n");
         } else {
             // we need the passed track parameters to create a unique indexable resource name
-            exmg_secure_sync_publish_key_message_to_file(session, message_buffer, track, message_media_time);
+            if (session->fs_pub_basepath) {
+                exmg_secure_sync_publish_key_message_to_file(session, message_buffer, track, message_media_time);
+            }
+            if (session->mqtt_pub_ctx) {
+                exmg_mqtt_pub_send(session->mqtt_pub_ctx, message_buffer, strlen(message_buffer) + 1, 3);
+            }
         }
 
         free(message_buffer); // free the buffer we malloc'd when put on the queue
@@ -133,7 +138,7 @@ static void exmg_secure_sync_on_fragment(ExmgSecureSyncEncSession *session)
     if (track == NULL) {
         // this might happen during FFmpeg core shutdown intermediate states,
         // and if we don't abort here cause a seg-fault i.e non-clean process termination.
-        av_log(mov, AV_LOG_WARNING, "Trying to push on queue, but default track is NULL !\n");
+        av_log(mov, AV_LOG_WARNING, "Trying to push on queue, but default track is NULL (maybe shutting down)\n");
         return;
     }
 
@@ -285,13 +290,13 @@ static void exmg_secure_sync_enc_session_init(ExmgSecureSyncEncSession **session
 
     session->fs_pub_basepath = getenv("FF_EXMG_SECURE_SYNC_FS_PUB_BASEPATH");
 
-    ExmgMqttServiceInfo mqttSrvInfo = EXMG_MQTT_SERVICE_INFO_DEFAULT_INIT;
-
     if (getenv("FF_EXMG_SECURE_SYNC_MQTT_PUB") != NULL) {
-        ExmgMqttPubConfig mqtt_config = mqttSrvInfo.pubConf;
-        exmg_mqtt_pub_context_init(&session->mqtt_pub_ctx, mqttSrvInfo.url, mqtt_config);
+        ExmgMqttServiceInfo mqtt_srv_info = EXMG_MQTT_SERVICE_INFO_DEFAULT_INIT;
+        ExmgMqttPubConfig mqtt_config = mqtt_srv_info.pub_conf;
+        exmg_mqtt_pub_context_init(&session->mqtt_pub_ctx, mqtt_srv_info.url, mqtt_config);
         if (!session->mqtt_pub_ctx->is_connected) {
             exmg_mqtt_pub_connect(session->mqtt_pub_ctx);
+            exmg_mqtt_pub_send(session->mqtt_pub_ctx, "ping", 5, -1);
         }
     }
 
