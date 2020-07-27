@@ -150,7 +150,7 @@ static int exmg_mqtt_pub_connect(ExmgMqttPubContext *ctx)
         av_log(NULL, AV_LOG_INFO, "MQTTClient_connect success to: %s\n", ctx->server_uri);
         ctx->is_connected = 1;
     } else {
-        av_log(NULL, AV_LOG_ERROR, "MQTTClient_connect failed (error-code=%d) to: %s\n ", rc, ctx->server_uri);
+        av_log(NULL, AV_LOG_WARNING, "MQTTClient_connect failed (error-code=%d) to: %s\n ", rc, ctx->server_uri);
         ctx->is_connected = 0;
     }
     return ctx->is_connected;
@@ -159,21 +159,23 @@ static int exmg_mqtt_pub_connect(ExmgMqttPubContext *ctx)
 static int exmg_mqtt_pub_send(ExmgMqttPubContext *ctx, const uint8_t* message_data, int message_length, int retry_counter)
 {
     if (retry_counter == 0) {
-        av_log(NULL, AV_LOG_ERROR, "exmg_mqtt_pub_send(%p, %p): abandoning retrials, permanently failed", ctx, message_data);
+        av_log(NULL, AV_LOG_ERROR,
+            "exmg_mqtt_pub_send(%p, %p): Abandoning retrials - permanently failed sending message data to: %s.",
+                ctx, message_data, ctx->server_uri);
         return 0;
     } else if (retry_counter < 0) {
         retry_counter = 3;
     }
 
     if (!ctx->is_connected && exmg_mqtt_pub_connect(ctx) != MQTTCLIENT_SUCCESS) {
-        av_log(NULL, AV_LOG_ERROR, "exmg_mqtt_pub_connect(%p) failed, retry-counter = %d \n", ctx, retry_counter);
+        av_log(NULL, AV_LOG_WARNING, "exmg_mqtt_pub_connect(%p) failed, retry-counter = %d \n", ctx, retry_counter);
         return exmg_mqtt_pub_send(ctx, message_data, message_length, --retry_counter);
     }
 
     int rc = MQTTClient_publish(ctx->client, ctx->config.topic, message_length, message_data, 0, 0, NULL);
     if (rc != MQTTCLIENT_SUCCESS)
     {
-        av_log(NULL, AV_LOG_ERROR,
+        av_log(NULL, AV_LOG_WARNING,
             "MQTTClient_publish on context @ %p failed (error-code = %d), retry-counter = %d\n", ctx, rc, retry_counter);
         ctx->is_connected = 0; // try to reconnect
         return exmg_mqtt_pub_send(ctx, message_data, message_length, --retry_counter);
