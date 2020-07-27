@@ -19,7 +19,7 @@
 // hard constants ("should be enough for everyone")
 // - or switch to a dynamically allocated queuing/printing
 #define EXMG_MESSAGE_BUFFER_SIZE 4096 // bytes, max size of one message
-#define EXMG_MESSAGE_QUEUE_SIZE 0xFFFF // queueing capacity, maximum number of message items stored ahead publishing
+#define EXMG_MESSAGE_QUEUE_SIZE 0xFFF // queueing capacity, maximum number of message items stored ahead publishing
 // hard-constant atm, as in poor-mens thread signaling (see FIXME where used)
 #define EXMG_MESSAGE_QUEUE_WORKER_POLL 0.020f // seconds -> default to 50fps to allow maximum needed accuracy
 
@@ -75,9 +75,11 @@ static void exmg_secure_sync_poll_publish_next(ExmgSecureSyncEncSession *session
     float next_popable_message_media_time = (float) message_media_time / (float) track->timescale;
     float time_diff = media_time_secs - next_popable_message_media_time;
 
-    av_log(mov, AV_LOG_DEBUG, "(%s) Next pop'able message media-time: %.3f [s]\n",
+    av_log(mov, AV_LOG_DEBUG, "(%s) Next pop'able message media-time: %.3f [s] (queue-len = %d)\n",
         av_get_media_type_string(track->par->codec_type),
-        next_popable_message_media_time);
+        next_popable_message_media_time,
+        (int) exmg_queue_length(session->scope_info_queue)
+    );
 
     if (time_diff >= session->message_send_delay_secs) {
 
@@ -88,11 +90,12 @@ static void exmg_secure_sync_poll_publish_next(ExmgSecureSyncEncSession *session
         // dipose of queue item
         exmg_secure_sync_scope_dispose(scope_info);
 
-        av_log(mov, AV_LOG_INFO, "(%s) Publishing SecureSync key-message with:\nencryption-scope media-time=%.3f [s]\nat encoding-time=%.3f [s]\neffective key-publish-delay=%.3f [s]\n",
+        av_log(mov, AV_LOG_INFO, "(%s) Publishing SecureSync key-message with:\nencryption-scope media-time=%.3f [s]\nat encoding-time=%.3f [s]\neffective key-publish-delay=%.3f [s]\nqueue-length=%d\n",
             av_get_media_type_string(track->par->codec_type),
             next_popable_message_media_time,
             media_time_secs,
-            time_diff);
+            time_diff,
+            (int) exmg_queue_length(session->scope_info_queue));
 
         if (session->is_dry_run) {
             av_log(mov, AV_LOG_WARNING, "SecureSync dry-run, not really publishing anything.\n");
