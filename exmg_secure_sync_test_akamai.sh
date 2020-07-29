@@ -33,11 +33,11 @@ mkdir -p $key_output
 
 export FF_EXMG_SECURE_SYNC_ON=""
 #export FF_EXMG_SECURE_SYNC_DRY_RUN=""
-#export FF_EXMG_SECURE_SYNC_NO_ENCRYPTION="" 
+#export FF_EXMG_SECURE_SYNC_NO_ENCRYPTION=""
 
 export FF_EXMG_SECURE_SYNC_MQTT_PUB=1 # anything set will enable MQTT key-pub
-export FF_EXMG_SECURE_SYNC_FS_PUB_BASEPATH=$output/ # ending slash is mandatory (or empty string "") / unset to disable fs key-pub 
-export FF_EXMG_SECURE_SYNC_MESSAGE_SEND_DELAY="5" # seconds (float)
+export FF_EXMG_SECURE_SYNC_FS_PUB_BASEPATH=$key_output/ # ending slash is mandatory (or empty string "") / unset to disable fs key-pub
+export FF_EXMG_SECURE_SYNC_MESSAGE_SEND_DELAY="1" # seconds (float)
 export FF_EXMG_SECURE_SYNC_FRAGMENTS_PER_KEY="30" # amount (int)
 
 echo "Publishing to: $output and sub-directory: $sub_folder"
