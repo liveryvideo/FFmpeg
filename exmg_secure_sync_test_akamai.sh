@@ -54,6 +54,8 @@ export log_level="info" # quiet / error / debug / verbose
        -flags +global_header \
        -r $frame_rate_num/$frame_rate_den \
        -af aresample=async=1 \
+       -c:v libx264 \
+       -preset medium \
        -vf "settb=AVTB,\
               setpts='trunc(PTS/1K)*1K+st(1,trunc(RTCTIME/1K))-1K*trunc(ld(1)/1K)', \
               drawtext=rate=30:text='%{localtime}.%{eif\:1M*t-1K*trunc(t*1K)\:d}:' \
@@ -64,6 +66,7 @@ export log_level="info" # quiet / error / debug / verbose
        -sc_threshold 0 \
        -force_key_frames "expr:gte(t,n_forced*"$segment_size_in_seconds")" \
        -bf 0 \
+       -x264opts scenecut=-1:rc_lookahead=0 \
        -c:a aac \
        -b:a $audio_bitrate \
        -seg_duration $segment_size_in_seconds \
