@@ -7,18 +7,89 @@
 #include "exmg_secure_sync_structs.h"
 
 /**
- * POSIX FS convenience layer to write the file straight forward
- * given filename and message string.
- */
-static int exmg_secure_sync_write_file(const char *filename, const uint8_t *data, int append)
+ * WARN: Will not perform fs operation atomically on WIN32 ! Intermediate state where fname link
+ *       does not exist anymore may appear. Safe on Linux/Unix (POSIX compatible).
+ *
+ * */
+static int exmg_secure_sync_file_trim_leading_lines(const char* fname, int nb_of_lines)
 {
-    av_log(NULL, AV_LOG_INFO, "exmg_secure_sync_write_file: %s\n", filename);
+    if (nb_of_lines <= 0) return 1;
+
+    static const char tmp_ext[] = ".tmp";
+
+    FILE *f_in;
+    FILE *f_out;
+
+    char temp_filename[strlen(fname) + sizeof(tmp_ext)];
+    strcpy(temp_filename, fname);
+    strcat(temp_filename, tmp_ext);
+
+    f_in = fopen(fname, "r");
+    if (!f_in)
+    {
+        av_log(NULL, AV_LOG_ERROR, "File not found or unable to open the input file: %s\n", fname);
+        return 0;
+    }
+
+    // open the temporary file in write mode
+    f_out = fopen(temp_filename, "w");
+    if (!f_out)
+    {
+        av_log(NULL, AV_LOG_ERROR, "Unable to open a temporary file to write: %s\n", temp_filename);
+        fclose(f_in);
+        return 0;
+    }
+
+    char line_buf[1024];
+    int line_buf_size = sizeof(line_buf);
+
+    // copy all contents to the temporary file except the specific line
+    for (int line_idx = 0; !feof(f_in); line_idx++)
+    {
+        if (fgets(line_buf, line_buf_size, f_in) == NULL) break;
+        /* skip the line at given line number */
+        if (line_idx < nb_of_lines) continue;
+        fprintf(f_out, "%s", line_buf);
+    }
+
+    fclose(f_in);
+    fclose(f_out);
+
+    // rename the temporary file to original name
+    // First: attempt a posix/unix "atomic move" first (ideal happy path, as otherwise
+    // we can have state where `fname` path does not exist anymore at all).
+    // Second: `rename` on an existing path is safe to fail on Windows, we then fallback
+    // to removing the existing link first, then finally rename. Undesired
+    // state would be allowed to exist between these two calls in this case.
+    // see https://stackoverflow.com/questions/167414/is-an-atomic-file-rename-with-overwrite-possible-on-windows/60963667#60963667
+    // and specifically https://stackoverflow.com/a/60963667/589493 for an uptodate 2020 answer.
+    if (rename(temp_filename, fname) != 0) {
+        remove(fname);
+        rename(temp_filename, fname);
+    }
+
+    return 1;
+}
+
+/**
+ * Filesystem convenience layer around POSIX
+ * to write the file straight forward given path and message data
+ * in append mode or plain "w" optionnaly.
+ * Data will be "println'd" to the the FILE as chars (%s format).
+ * If in append mode, trim_lines will remove number of lines
+ * from beginning.
+ * Any negative trim_lines value will result in no limitation at all.
+ */
+static int exmg_secure_sync_file_write_line(const char *path, const uint8_t *data, int append, int trim_lines)
+{
+    av_log(NULL, AV_LOG_INFO, "exmg_secure_sync_write_file: %s\n", path);
 
     FILE *f;
     if (append) {
-        f = fopen(filename, "a");
+        exmg_secure_sync_file_trim_leading_lines(path, trim_lines);
+        f = fopen(path, "a");
     } else {
-        f = fopen(filename, "w");
+        f = fopen(path, "w");
     }
 
     if (f == NULL)
@@ -41,7 +112,7 @@ static int exmg_secure_sync_write_file(const char *filename, const uint8_t *data
  *
  * This function will then directly call to `exmg_secure_sync_write_file` with its result.
  */
-static void exmg_secure_sync_publish_key_message_to_file(ExmgSecureSyncEncSession* session, 
+static void exmg_secure_sync_publish_key_message_to_file(ExmgSecureSyncEncSession* session,
     uint8_t* message_buffer, MOVTrack* track, int64_t message_media_time) {
 
     #define KEY_MESSAGE_FILENAME_TEMPLATE "exmg_key_%s_%d_%ld.json"
@@ -74,13 +145,15 @@ static void exmg_secure_sync_publish_key_message_to_file(ExmgSecureSyncEncSessio
         exit(1);
     }
 
-    res = exmg_secure_sync_write_file(filename, message_buffer, 0);
+    res = exmg_secure_sync_file_write_line(filename, message_buffer, 0, 0);
     if (!res) {
         av_log(session->mov, AV_LOG_ERROR, "Fatal error writing key-message!\n");
         exit(1);
     }
 
-    res = exmg_secure_sync_write_file(index_path, (uint8_t*) filename, 1);
+    int trim_lines = session->key_index_max_window >= 0 && (((int) session->key_index_counter) > session->key_index_max_window) ? 1 : 0;
+
+    res = exmg_secure_sync_file_write_line(index_path, (uint8_t*) filename, 1, trim_lines);
     if (!res) {
         av_log(session->mov, AV_LOG_ERROR, "Fatal error writing key-message!\n");
         exit(1);

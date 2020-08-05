@@ -7,6 +7,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <inttypes.h>
 
 #include "exmg_secure_sync_structs.h"
 #include "exmg_mqtt.h"
@@ -150,7 +151,7 @@ static void exmg_secure_sync_on_fragment(ExmgSecureSyncEncSession *session)
 
         session->key_scope_duration = 0;
         session->key_scope_first_pts = track->frag_start;
-        session->key_id_counter++;
+        session->key_index_counter++;
 
         //generate new key & IV: scale random int to ensured 32 bits
         uint32_t media_encrypt_key = (uint32_t) (rand() & 0xFFFF);
@@ -229,7 +230,10 @@ static void exmg_secure_sync_on_fragment(ExmgSecureSyncEncSession *session)
         track->par->codec_id, // TODO: replace by codec_tag (4CC)
         av_get_media_type_string(track->par->codec_type),
         track->par->bit_rate,
-        session->key_id_counter,
+        session->key_index_counter, // NOTE: we use the key-index as "id" for the key,
+                                    // which should be fine in the range of uint64_t
+                                    // but the actual limitation here would be
+                                    // max-safe-integer of JS client reading this.
         key,
         iv
     );
@@ -322,9 +326,16 @@ static void exmg_secure_sync_enc_session_init(ExmgSecureSyncEncSession **session
         session->fragments_per_key = 1;
     }
 
+    char* key_index_max_window = getenv("FF_EXMG_SECURE_SYNC_KEY_INDEX_MAX_WINDOW");
+    if (key_index_max_window != NULL) {
+        session->key_index_max_window = atoi(key_index_max_window);
+    } else {
+        session->key_index_max_window = -1;
+    }
+
     session->key_scope_duration = 0;
     session->key_frag_counter = 0;
-    session->key_id_counter = 0;
+    session->key_index_counter = 0;
 
     exmg_queue_init(&session->scope_info_queue, EXMG_MESSAGE_QUEUE_SIZE);
 

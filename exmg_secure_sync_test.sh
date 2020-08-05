@@ -31,8 +31,9 @@ export FF_EXMG_SECURE_SYNC_ON=""
 
 export FF_EXMG_SECURE_SYNC_MQTT_PUB=1 # anything set will enable MQTT key-pub
 export FF_EXMG_SECURE_SYNC_FS_PUB_BASEPATH=$output/ # ending slash is mandatory (or empty string "") / unset to disable fs key-pub 
-export FF_EXMG_SECURE_SYNC_MESSAGE_SEND_DELAY="5" # seconds (float)
+export FF_EXMG_SECURE_SYNC_MESSAGE_SEND_DELAY="0" # seconds (float)
 export FF_EXMG_SECURE_SYNC_FRAGMENTS_PER_KEY="30" # amount (int)
+export FF_EXMG_SECURE_SYNC_KEY_INDEX_MAX_WINDOW="5"
 
 echo ""
 echo "Output path: $output"

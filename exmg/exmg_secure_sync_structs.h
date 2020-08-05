@@ -14,9 +14,10 @@ typedef struct ExmgSecureSyncEncSession {
     float message_send_delay_secs;
 
     uint32_t fragments_per_key;
-
-    uint32_t key_id_counter;
     uint32_t key_frag_counter;
+
+    uint64_t key_index_counter;
+
 
     int64_t key_scope_first_pts;
     int64_t key_scope_duration;
@@ -33,6 +34,7 @@ typedef struct ExmgSecureSyncEncSession {
 
     int is_dry_run;
     int is_encryption_enabled;
+    int key_index_max_window;
 
     const char* fs_pub_basepath;
     ExmgMqttPubContext *mqtt_pub_ctx;
