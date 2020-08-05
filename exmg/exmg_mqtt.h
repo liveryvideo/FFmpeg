@@ -168,7 +168,7 @@ static int exmg_mqtt_pub_send(ExmgMqttPubContext *ctx, const uint8_t* message_da
     }
 
     if (!ctx->is_connected && exmg_mqtt_pub_connect(ctx) != MQTTCLIENT_SUCCESS) {
-        av_log(NULL, AV_LOG_WARNING, "exmg_mqtt_pub_connect(%p) failed, retry-counter = %d \n", ctx, retry_counter);
+        av_log(NULL, AV_LOG_WARNING, "exmg_mqtt_pub_connect(%p) failed, retrial-attempts left = %d \n", ctx, retry_counter);
         return exmg_mqtt_pub_send(ctx, message_data, message_length, --retry_counter);
     }
 
@@ -176,7 +176,7 @@ static int exmg_mqtt_pub_send(ExmgMqttPubContext *ctx, const uint8_t* message_da
     if (rc != MQTTCLIENT_SUCCESS)
     {
         av_log(NULL, AV_LOG_WARNING,
-            "MQTTClient_publish on context @ %p failed (error-code = %d), retry-counter = %d\n", ctx, rc, retry_counter);
+            "MQTTClient_publish on context @ %p failed (error-code = %d), retrial-attempts left = %d\n", ctx, rc, retry_counter);
         ctx->is_connected = 0; // try to reconnect
         return exmg_mqtt_pub_send(ctx, message_data, message_length, --retry_counter);
     }

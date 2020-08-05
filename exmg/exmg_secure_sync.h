@@ -157,7 +157,7 @@ static void exmg_secure_sync_on_fragment(ExmgSecureSyncEncSession *session)
         uint32_t media_encrypt_key = (uint32_t) (rand() & 0xFFFF);
         uint32_t media_encrypt_iv = 0; // (uint32_t) rand();
 
-        av_log(mov, AV_LOG_VERBOSE, "(%s) Set key/iv pair for %u next fragments: %u (0x%08X) / %u (0x%08X)\n",
+        av_log(mov, AV_LOG_VERBOSE, "(%s) Set key/iv pair for %"PRIu32" next fragments: %"PRIu32" (0x%08X) / %"PRIu32" (0x%08X)\n",
             av_get_media_type_string(track->par->codec_type),
             session->fragments_per_key,
             media_encrypt_key, media_encrypt_key,
@@ -185,7 +185,7 @@ static void exmg_secure_sync_on_fragment(ExmgSecureSyncEncSession *session)
 
     av_log(mov,
         AV_LOG_VERBOSE,
-        "(%s) Fragment duration: %lld, key-scope so-far duration: %lld (%u of %u fragments done in encryption-scope)\n",
+        "(%s) Fragment duration: %"PRIi64", key-scope so-far duration: %"PRIi64" (%"PRIu32" of %"PRIu32" fragments done in encryption-scope)\n",
         av_get_media_type_string(track->par->codec_type),
         frag_duration,
         session->key_scope_duration,
@@ -214,13 +214,15 @@ static void exmg_secure_sync_on_fragment(ExmgSecureSyncEncSession *session)
     memcpy(&key, &session->aes_key, sizeof(key));
     memcpy(&iv, &session->aes_iv, sizeof(iv));
 
+    // TODO: use cJSON lib here?
+
     // alloc message buffer (free'd after having been pop'd from queue and sent)
     uint8_t *message_buffer = (uint8_t *) malloc(EXMG_MESSAGE_BUFFER_SIZE * sizeof(char));
     // write message data
     int printf_res = snprintf((char *) message_buffer, EXMG_MESSAGE_BUFFER_SIZE,
-        "{\"creation_time\": %lld, \"fragment_info\": {\"track_id\": %d, \"media_time_secs\": %f, \
-        \"first_pts\": %lld, \"duration\": %lld, \"timescale\": %u, \"codec_id\": %d, \"codec_type\": \"%s\", \"bitrate\": %lld}, \
-        \"key_id\": %d, \"key\": \"0x%08X\", \"iv\": \"0x%08X\"}",
+        "{\"creation_time\": %"PRIi64", \"fragment_info\": {\"track_id\": %d, \"media_time_secs\": %f, \
+        \"first_pts\": %"PRIi64", \"duration\": %"PRIi64", \"timescale\": %u, \"codec_id\": %d, \"codec_type\": \"%s\", \"bitrate\": %"PRIi64"}, \
+        \"key_id\": %"PRIu64", \"key\": \"0x%08X\", \"iv\": \"0x%08X\"}",
         av_gettime(),
         track->track_id,
         key_scope_start_secs,
@@ -307,7 +309,7 @@ static void exmg_secure_sync_enc_session_init(ExmgSecureSyncEncSession **session
         }
     }
 
-    char* message_send_delay = getenv("FF_EXMG_SECURE_SYNC_MESSAGE_SEND_DELAY");
+    const char* message_send_delay = getenv("FF_EXMG_SECURE_SYNC_MESSAGE_SEND_DELAY");
     if (message_send_delay != NULL) {
         session->message_send_delay_secs = strtof(message_send_delay, NULL);
     } else {
@@ -315,7 +317,7 @@ static void exmg_secure_sync_enc_session_init(ExmgSecureSyncEncSession **session
         session->message_send_delay_secs = EXMG_MESSAGE_SEND_DELAY;
     }
 
-    char* fragments_per_key = getenv("FF_EXMG_SECURE_SYNC_FRAGMENTS_PER_KEY");
+    const char* fragments_per_key = getenv("FF_EXMG_SECURE_SYNC_FRAGMENTS_PER_KEY");
     if (fragments_per_key != NULL) {
         session->fragments_per_key = (uint32_t) atoi(fragments_per_key);
         if (session->fragments_per_key == 0) {
@@ -326,11 +328,18 @@ static void exmg_secure_sync_enc_session_init(ExmgSecureSyncEncSession **session
         session->fragments_per_key = 1;
     }
 
-    char* key_index_max_window = getenv("FF_EXMG_SECURE_SYNC_KEY_INDEX_MAX_WINDOW");
+    const char* key_index_max_window = getenv("FF_EXMG_SECURE_SYNC_KEY_INDEX_MAX_WINDOW");
     if (key_index_max_window != NULL) {
         session->key_index_max_window = atoi(key_index_max_window);
     } else {
         session->key_index_max_window = -1;
+    }
+
+    if (session->key_index_max_window < 0) {
+        av_log(session->mov, AV_LOG_WARNING,
+        "Setting key-index maximum window size to unlimited (negative int value).\n"
+        "This will cause resource bound limitations, for example file size.\n"
+        "Better use an appropriate window (same as for for DVR)\n");
     }
 
     session->key_scope_duration = 0;
@@ -355,7 +364,7 @@ static void exmg_secure_sync_enc_session_init(ExmgSecureSyncEncSession **session
     }
 
     av_log(mov, AV_LOG_INFO,
-        "Initialized SecureSync encode/encrypt context. Key-Publish-Delay=%0.3f [s]; Fragments-per-Key=%u\n",
+        "Initialized SecureSync encode/encrypt context. Key-Publish-Delay=%0.3f [s]; Fragments-per-Key=%"PRIu32"\n",
         session->message_send_delay_secs,
         session->fragments_per_key
     );

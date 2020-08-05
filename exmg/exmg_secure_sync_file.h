@@ -63,7 +63,12 @@ static int exmg_secure_sync_file_trim_leading_lines(const char* fname, int nb_of
     // state would be allowed to exist between these two calls in this case.
     // see https://stackoverflow.com/questions/167414/is-an-atomic-file-rename-with-overwrite-possible-on-windows/60963667#60963667
     // and specifically https://stackoverflow.com/a/60963667/589493 for an uptodate 2020 answer.
-    if (rename(temp_filename, fname) != 0) {
+    // `rename` returns non-zero on error
+    int err;
+    if ((err = rename(temp_filename, fname)) != 0) {
+        av_log(NULL, AV_LOG_WARNING, "Got error-code %d attempting atomic move on POSIX-like FILE `rename` function.\n"
+        "Falling back to two-step remove/rename routine (this is expected with a Win32-OS).\n"
+        "This is potentially allowing undefined intermediate file deletion status.\n", err);
         remove(fname);
         rename(temp_filename, fname);
     }

@@ -18,7 +18,6 @@ typedef struct ExmgSecureSyncEncSession {
 
     uint64_t key_index_counter;
 
-
     int64_t key_scope_first_pts;
     int64_t key_scope_duration;
 
