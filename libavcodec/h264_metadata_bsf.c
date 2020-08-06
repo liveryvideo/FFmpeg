@@ -22,6 +22,7 @@
 #include "libavutil/opt.h"
 
 #include "bsf.h"
+#include "bsf_internal.h"
 #include "cbs.h"
 #include "cbs_h264.h"
 #include "h264.h"
@@ -275,6 +276,49 @@ static int h264_metadata_update_sps(AVBSFContext *bsf,
     return 0;
 }
 
+static int h264_metadata_update_side_data(AVBSFContext *bsf, AVPacket *pkt)
+{
+    H264MetadataContext *ctx = bsf->priv_data;
+    CodedBitstreamFragment *au = &ctx->access_unit;
+    uint8_t *side_data;
+    int side_data_size;
+    int err, i;
+
+    side_data = av_packet_get_side_data(pkt, AV_PKT_DATA_NEW_EXTRADATA,
+                                        &side_data_size);
+    if (!side_data_size)
+        return 0;
+
+    err = ff_cbs_read(ctx->cbc, au, side_data, side_data_size);
+    if (err < 0) {
+        av_log(bsf, AV_LOG_ERROR, "Failed to read extradata from packet side data.\n");
+        return err;
+    }
+
+    for (i = 0; i < au->nb_units; i++) {
+        if (au->units[i].type == H264_NAL_SPS) {
+            err = h264_metadata_update_sps(bsf, au->units[i].content);
+            if (err < 0)
+                return err;
+        }
+    }
+
+    err = ff_cbs_write_fragment_data(ctx->cbc, au);
+    if (err < 0) {
+        av_log(bsf, AV_LOG_ERROR, "Failed to write extradata into packet side data.\n");
+        return err;
+    }
+
+    side_data = av_packet_new_side_data(pkt, AV_PKT_DATA_NEW_EXTRADATA, au->data_size);
+    if (!side_data)
+        return AVERROR(ENOMEM);
+    memcpy(side_data, au->data, au->data_size);
+
+    ff_cbs_fragment_reset(ctx->cbc, au);
+
+    return 0;
+}
+
 static int h264_metadata_filter(AVBSFContext *bsf, AVPacket *pkt)
 {
     H264MetadataContext *ctx = bsf->priv_data;
@@ -285,6 +329,10 @@ static int h264_metadata_filter(AVBSFContext *bsf, AVPacket *pkt)
     err = ff_bsf_get_packet_ref(bsf, pkt);
     if (err < 0)
         return err;
+
+    err = h264_metadata_update_side_data(bsf, pkt);
+    if (err < 0)
+        goto fail;
 
     err = ff_cbs_read_packet(ctx->cbc, au, pkt);
     if (err < 0) {
@@ -381,7 +429,7 @@ static int h264_metadata_filter(AVBSFContext *bsf, AVPacket *pkt)
             } else {
                 goto invalid_user_data;
             }
-            if (i & 1)
+            if (j & 1)
                 udu->uuid_iso_iec_11578[j / 2] |= v;
             else
                 udu->uuid_iso_iec_11578[j / 2] = v << 4;
@@ -480,7 +528,7 @@ static int h264_metadata_filter(AVBSFContext *bsf, AVPacket *pkt)
                 if (err < 0) {
                     av_log(bsf, AV_LOG_ERROR, "Failed to attach extracted "
                            "displaymatrix side data to packet.\n");
-                    av_freep(matrix);
+                    av_free(matrix);
                     goto fail;
                 }
             }
