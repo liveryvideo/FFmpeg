@@ -832,7 +832,7 @@ int swr_drop_output(struct SwrContext *s, int count){
     if(s->drop_output <= 0)
         return 0;
 
-    av_log(s, AV_LOG_VERBOSE, "discarding %d audio samples\n", count);
+    av_log(s, AV_LOG_INFO, "discarding %d audio samples\n", count);
     return swr_convert(s, NULL, s->drop_output, tmp_arg, 0);
 }
 
@@ -859,7 +859,7 @@ int swr_inject_silence(struct SwrContext *s, int count){
         memset(s->silence.ch[0], s->silence.bps==1 ? 0x80 : 0, count*s->silence.bps*s->silence.ch_count);
 
     reversefill_audiodata(&s->silence, tmp_arg);
-    av_log(s, AV_LOG_VERBOSE, "adding %d audio samples of silence\n", count);
+    av_log(s, AV_LOG_INFO, "adding %d audio samples of silence\n", count);
     ret = swr_convert(s, NULL, 0, (const uint8_t**)tmp_arg, count);
     return ret;
 }
@@ -939,7 +939,7 @@ int64_t swr_next_pts(struct SwrContext *s, int64_t pts){
                 int duration = s->out_sample_rate * s->soft_compensation_duration;
                 double max_soft_compensation = s->max_soft_compensation / (s->max_soft_compensation < 0 ? -s->in_sample_rate : 1);
                 int comp = av_clipf(fdelta, -max_soft_compensation, max_soft_compensation) * duration ;
-                av_log(s, AV_LOG_VERBOSE, "compensating audio timestamp drift:%f compensation:%d in:%d\n", fdelta, comp, duration);
+                av_log(s, AV_LOG_INFO, "compensating audio timestamp drift:%f compensation:%d in:%d\n", fdelta, comp, duration);
                 swr_set_compensation(s, comp, duration);
             }
         }
