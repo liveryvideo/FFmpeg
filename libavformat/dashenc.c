@@ -1243,8 +1243,7 @@ static int write_manifest(AVFormatContext *s, int final)
          avio_printf(out, "%s%s", "urn:mpeg:dash:profile:isoff-live:2011", c->profile & MPD_PROFILE_DVB ? "," : "\"\n");
     if (c->profile & MPD_PROFILE_DVB)
          avio_printf(out, "%s", "urn:dvb:dash:profile:dvb-dash:2014\"\n");
-    avio_printf(out, "\ttype=\"%s\"\n",
-                "\ttype=\"%s\"\n", "dynamic");
+    avio_printf(out, "\ttype=\"%s\"\n", "dynamic");
 
     if (final) {
         avio_printf(out, "\tmediaPresentationDuration=\"");
