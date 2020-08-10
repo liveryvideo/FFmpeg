@@ -25,7 +25,7 @@
 #define EXMG_MESSAGE_QUEUE_WORKER_POLL 0.020f // seconds -> default to 50fps to allow maximum needed accuracy
 
 // defaults, for when not set by env
-#define EXMG_MESSAGE_SEND_DELAY 10.0f // seconds // overrriden by FF_EXMG_KEY_MESSAGE_SEND_DELAY env var
+#define EXMG_KEY_PUBLISH_DELAY 10.0f // seconds // overrriden by FF_EXMG_KEY_MESSAGE_SEND_DELAY env var
 
 static ExmgSecureSyncScope* exmg_secure_sync_scope_new(uint8_t *media_key_message, int64_t media_time)
 {
@@ -295,7 +295,7 @@ static void exmg_secure_sync_enc_session_init(ExmgSecureSyncEncSession **session
     session->mov = mov;
 
     session->is_dry_run = getenv("FF_EXMG_SECURE_SYNC_DRY_RUN") != NULL;
-    session->is_encryption_enabled = getenv("FF_EXMG_SECURE_SYNC_NO_ENCRYPTION") != NULL;
+    session->is_encryption_enabled = getenv("FF_EXMG_SECURE_SYNC_NO_ENCRYPTION") == NULL;
 
     session->fs_pub_basepath = getenv("FF_EXMG_SECURE_SYNC_FS_PUB_BASEPATH");
 
@@ -309,12 +309,13 @@ static void exmg_secure_sync_enc_session_init(ExmgSecureSyncEncSession **session
         }
     }
 
-    const char* message_send_delay = getenv("FF_EXMG_SECURE_SYNC_MESSAGE_SEND_DELAY");
+    // TODO: rename `message_send_delay` to `key_publish_delay`
+    const char* message_send_delay = getenv("FF_EXMG_SECURE_SYNC_KEY_PUBLISH_DELAY");
     if (message_send_delay != NULL) {
         session->message_send_delay_secs = strtof(message_send_delay, NULL);
     } else {
-        av_log(mov, AV_LOG_WARNING, "Using default value for FF_EXMG_SECURE_SYNC_MESSAGE_SEND_DELAY");
-        session->message_send_delay_secs = EXMG_MESSAGE_SEND_DELAY;
+        av_log(mov, AV_LOG_WARNING, "Using default value for FF_EXMG_SECURE_SYNC_KEY_PUBLISH_DELAY");
+        session->message_send_delay_secs = EXMG_KEY_PUBLISH_DELAY;
     }
 
     const char* fragments_per_key = getenv("FF_EXMG_SECURE_SYNC_FRAGMENTS_PER_KEY");

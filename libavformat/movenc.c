@@ -5204,7 +5204,7 @@ static int mov_flush_fragment(AVFormatContext *s, int force)
         }
 
         if (mov->exmg_key_sys && mov->exmg_key_sys->is_encryption_enabled) {
-            av_log(mov, AV_LOG_VERBOSE, "(%s) Encrypting %d bytes of payload @ %p \n",
+            av_log(mov, AV_LOG_VERBOSE, "(%s) Encrypting (AES-CTR) %d bytes of MP4 mdat-payload @ %p\n",
                 av_get_media_type_string(track->par->codec_type),
                 buf_size,
                 buf
