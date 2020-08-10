@@ -20,7 +20,7 @@ static int exmg_secure_sync_file_trim_leading_lines(const char* fname, int nb_of
     FILE *f_in;
     FILE *f_out;
 
-    char temp_filename[strlen(fname) + sizeof(tmp_ext)];
+    char *temp_filename = malloc(strlen(fname) + sizeof(tmp_ext));
     strcpy(temp_filename, fname);
     strcat(temp_filename, tmp_ext);
 
@@ -37,6 +37,7 @@ static int exmg_secure_sync_file_trim_leading_lines(const char* fname, int nb_of
     {
         av_log(NULL, AV_LOG_ERROR, "Unable to open a temporary file to write: %s\n", temp_filename);
         fclose(f_in);
+        free(temp_filename);
         return 0;
     }
 
@@ -73,6 +74,7 @@ static int exmg_secure_sync_file_trim_leading_lines(const char* fname, int nb_of
         rename(temp_filename, fname);
     }
 
+    free(temp_filename);
     return 1;
 }
 
