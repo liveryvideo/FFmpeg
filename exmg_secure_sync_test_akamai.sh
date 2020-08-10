@@ -36,10 +36,10 @@ export FF_EXMG_SECURE_SYNC_ON=""
 #export FF_EXMG_SECURE_SYNC_NO_ENCRYPTION=""
 
 export FF_EXMG_SECURE_SYNC_KEY_PUBLISH_DELAY="0" # seconds (float)
-export FF_EXMG_SECURE_SYNC_KEY_INDEX_MAX_WINDOW="-1" # nb of key-scopes held in file-written index (int) (negative -> unlimited)
+export FF_EXMG_SECURE_SYNC_KEY_INDEX_MAX_WINDOW="60" # nb of key-scopes held in file-written index (int) (negative -> unlimited)
 export FF_EXMG_SECURE_SYNC_FRAGMENTS_PER_KEY="30" # amount of fragments per key-scope (int)
 export FF_EXMG_SECURE_SYNC_MQTT_PUB=1 # anything set will enable MQTT key-pub
-export FF_EXMG_SECURE_SYNC_FS_PUB_BASEPATH=$output/ # ending slash is mandatory (or empty string "") / unset to disable fs key-pub 
+export FF_EXMG_SECURE_SYNC_FS_PUB_BASEPATH=$key_output/ # ending slash is mandatory (or empty string "") / unset to disable fs key-pub 
 
 echo "Publishing to: $output and sub-directory: $sub_folder"
 echo "MPD available at: $mpd_url"
