@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "libavutil/log.h"
+#include "libavutil/thread.h"
 
 #include "MQTTClient.h"
 
@@ -42,6 +43,7 @@ typedef struct ExmgMqttPubContext {
     int is_tls;
     int is_connected;
     MQTTClient client;
+    pthread_mutex_t client_lock;
 } ExmgMqttPubContext;
 
 typedef struct ExmgMqttPubContextCollection {
@@ -50,16 +52,31 @@ typedef struct ExmgMqttPubContextCollection {
     size_t ctxs_size;
 } ExmgMqttPubContextCollection;
 
+static pthread_mutex_t exmg_mqtt_pub_ctx_lock;
+
+static void exmg_mqtt_init_pub_contexts_once() {
+    ff_mutex_init(&exmg_mqtt_pub_ctx_lock, NULL);
+}
+
 static ExmgMqttPubContextCollection exmg_mqtt_get_pub_contexts() {
+    static AVOnce init_once_control = AV_ONCE_INIT;
+    ff_thread_once(&init_once_control, exmg_mqtt_init_pub_contexts_once);
+
+    ff_mutex_lock(&exmg_mqtt_pub_ctx_lock);
+
     static ExmgMqttPubContext* ctx_ptrs[0xFF];
     static size_t ctx_ptrs_idx = 0;
+
     ExmgMqttPubContextCollection c = {ctx_ptrs, &ctx_ptrs_idx, sizeof(ctx_ptrs)};
+
+    ff_mutex_unlock(&exmg_mqtt_pub_ctx_lock);
     return c;
 }
 
 static void exmg_mqtt_pub_context_init(ExmgMqttPubContext **ptr, const char* url, ExmgMqttPubConfig config) {
 
     ExmgMqttPubContextCollection c = exmg_mqtt_get_pub_contexts();
+
     for (size_t i = 0; i < *c.ctxs_next_idx; i++) {
         ExmgMqttPubContext *existing_ctx = c.ctxs[i];
         if (strcmp(existing_ctx->server_uri, url) == 0
@@ -78,6 +95,8 @@ static void exmg_mqtt_pub_context_init(ExmgMqttPubContext **ptr, const char* url
     ctx->config = config;
     ctx->is_tls = strncmp(url, "ssl://", 6) == 0 || strncmp(url, "wss://", 6) == 0;
     ctx->is_connected = 0;
+
+    ff_mutex_init(&ctx->client_lock, NULL);
 
     MQTTClient_createOptions opts = MQTTClient_createOptions_initializer;
     opts.MQTTVersion = MQTT_VERSION;
@@ -98,7 +117,9 @@ static void exmg_mqtt_pub_context_init(ExmgMqttPubContext **ptr, const char* url
 
     av_log(NULL, AV_LOG_INFO, "MQTTClient_createWithOptions(%p) success with context @ %p\n", ctx->client, ctx);
 
+    ff_mutex_lock(&exmg_mqtt_pub_ctx_lock);
     c.ctxs[(*c.ctxs_next_idx)++] = *ptr = ctx;
+    ff_mutex_unlock(&exmg_mqtt_pub_ctx_lock);
 }
 
 static void exmg_mqtt_pub_context_deinit(ExmgMqttPubContext **ptr) {
@@ -160,7 +181,7 @@ static int exmg_mqtt_pub_send(ExmgMqttPubContext *ctx, const uint8_t* message_da
 {
     if (retry_counter == 0) {
         av_log(NULL, AV_LOG_ERROR,
-            "exmg_mqtt_pub_send(%p, %p): Abandoning retrials - permanently failed sending message data to: %s.",
+            "exmg_mqtt_pub_send(%p, %p): Abandoning retrials - permanently failed sending message data to: %s\n",
                 ctx, message_data, ctx->server_uri);
         return 0;
     } else if (retry_counter < 0) {
