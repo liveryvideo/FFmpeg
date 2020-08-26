@@ -77,6 +77,7 @@ static void exmg_mqtt_pub_context_init(ExmgMqttPubContext **ptr, const char* url
 
     ExmgMqttPubContextCollection c = exmg_mqtt_get_pub_contexts();
 
+    ff_mutex_lock(&exmg_mqtt_pub_ctx_lock);
     for (size_t i = 0; i < *c.ctxs_next_idx; i++) {
         ExmgMqttPubContext *existing_ctx = c.ctxs[i];
         if (strcmp(existing_ctx->server_uri, url) == 0
@@ -84,10 +85,15 @@ static void exmg_mqtt_pub_context_init(ExmgMqttPubContext **ptr, const char* url
             && (existing_ctx->config.client_id == config.client_id)) {
             av_log(NULL, AV_LOG_INFO,
                 "Reusing existing MQTT pub context @ %p for server URL (matching config): %s\n", existing_ctx, url);
+            // re-using an existing client
+            ff_mutex_unlock(&exmg_mqtt_pub_ctx_lock);
             *ptr = existing_ctx;
             return;
         }
     }
+    ff_mutex_unlock(&exmg_mqtt_pub_ctx_lock);
+
+    // create a new context
 
     ExmgMqttPubContext *ctx = (ExmgMqttPubContext*) malloc(sizeof(ExmgMqttPubContext));
 
@@ -117,6 +123,7 @@ static void exmg_mqtt_pub_context_init(ExmgMqttPubContext **ptr, const char* url
 
     av_log(NULL, AV_LOG_INFO, "MQTTClient_createWithOptions(%p) success with context @ %p\n", ctx->client, ctx);
 
+    // add context to global list
     ff_mutex_lock(&exmg_mqtt_pub_ctx_lock);
     c.ctxs[(*c.ctxs_next_idx)++] = *ptr = ctx;
     ff_mutex_unlock(&exmg_mqtt_pub_ctx_lock);
