@@ -1336,7 +1336,7 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
         av_bprintf(&request, "Proxy-%s", proxyauthstr);
     av_bprintf(&request, "\r\n");
 
-    av_log(h, AV_LOG_DEBUG, "request: %s\n", request.str);
+    av_log(h, AV_LOG_INFO, "request: %s\n", request.str);
 
     if (!av_bprint_is_complete(&request)) {
         av_log(h, AV_LOG_ERROR, "overlong headers\n");
