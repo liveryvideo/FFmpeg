@@ -16,11 +16,11 @@
 #define MQTT_CLIENT_DISCONNECT_TIMEOUT_MS 2000
 
 // MQTT config (defaults)
-#define EXMG_MQTT_URL "ssl://mqtt.liveryvideo.com:8883"
-#define EXMG_MQTT_CLIENTID "user2"
-#define EXMG_MQTT_USERNAME EXMG_MQTT_CLIENTID
-#define EXMG_MQTT_PASSWD "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyLWlkIjoidXNlcjIiLCJhdXRoLWdyb3VwcyI6InB1Ymxpc2g7c3Vic2NyaWJlIn0.BeBVt6WnpC9oNmd9-DLH7x4ROQaKUhQFOZYJBwyaV5GyYyXa3Hm-8GCppOFITp1-Djs5H5NrfThuDtDTaDr0vOZNPaSmkztW-fYWMZ7B4eUFEbnTwwoKzaZZRuQHqY_uFLyYM030VL3NMLhPdoyYnPrdHn-TnLHoZUkSh9gx0mBRJTA9fnurSgqRCM2ho4W5o_yQhB_ggIp04DgM0oZG8Qmts5nEmXLTTpEJs2wTla0aJ9a9bd2LBPF5jbXNkG8kI3BuH5-lq35EMH1UMMKBzqF4OiZ9pTc7GV9qhUDJvJOUlA3wxLWWLh4fuFQG-N90e_5Pj1xGNswIgAwzL7UehCBA03UFisY5AfNmoX0qQ_1Lbhl7xVnlMBtj4pSPCpQMHiuDkvQWvNFnmp9VCLcAQWvOXtasPl37Zd0Mwz1Nsn6ceUxBqUtCg26yA-v5Fs0nX5Z2UTCqtrLDjkNbtuMZTglkauVhZkvZp7ITC0bW_goNKSZgvRhGeh4cFkkUap059s7SUnrfWG7XMLoAsrG_nasfpNrHsHs2yZ7Hs8omYf7AkTP_vpXwNgBKfO5Y6wZyI50drTmZvVa1WXZp2YIbBSEz4rGa-lqAKVNKqMWK0g_3aUP6rQDbnenQRv7ZZ4x3W5QyYiUYD4PzkpWOSupIqgB968GTg_wrbPlGSysyR_U"
-#define EXMG_MQTT_TOPIC "joep/test"
+#define EXMG_MQTT_URL "ws://xvm-190-41.dc0.ghst.net:8885/mqtt"
+#define EXMG_MQTT_CLIENTID "exmg-mqtt-default-client-id"
+#define EXMG_MQTT_USERNAME "user1"
+#define EXMG_MQTT_PASSWD "liverymqtt123"
+#define EXMG_MQTT_TOPIC "/mqtt"
 
 typedef struct ExmgMqttPubConfig {
     const char* client_id;
@@ -168,6 +168,8 @@ static int exmg_mqtt_pub_connect(ExmgMqttPubContext *ctx)
         ssl_opts.privateKey = NULL;
         ssl_opts.privateKeyPassword = NULL;
         ssl_opts.enabledCipherSuites = NULL;
+        ssl_opts.enableServerCertAuth = 1;
+
         conn_opts.ssl = &ssl_opts;
     }
 
