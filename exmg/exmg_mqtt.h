@@ -17,7 +17,7 @@
 
 // MQTT config (defaults)
 #define EXMG_MQTT_URL "ws://xvm-190-41.dc0.ghst.net:8885/mqtt"
-#define EXMG_MQTT_CLIENTID "exmg-mqtt-default-client-id"
+#define EXMG_MQTT_CLIENTID "exmg-mqtt-ffmpeg-default-client-id"
 #define EXMG_MQTT_USERNAME "user1"
 #define EXMG_MQTT_PASSWD "liverymqtt123"
 #define EXMG_MQTT_TOPIC "/mqtt"
