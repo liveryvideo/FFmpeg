@@ -25,9 +25,9 @@ mkdir -p $output
 rm -Rf $output/*
 mkdir -p $output/$sub_folder
 
-export FF_EXMG_SECURE_SYNC_ON=""
+export FF_EXMG_SECURE_SYNC_ON="1"
 #export FF_EXMG_SECURE_SYNC_DRY_RUN=""
-#export FF_EXMG_SECURE_SYNC_NO_ENCRYPTION="" 
+#export FF_EXMG_SECURE_SYNC_NO_ENCRYPTION=""
 
 export FF_EXMG_SECURE_SYNC_KEY_PUBLISH_DELAY="0" # seconds (float)
 export FF_EXMG_SECURE_SYNC_KEY_INDEX_MAX_WINDOW="-1" # nb of key-scopes held in file-written index (int) (negative -> unlimited)
@@ -52,22 +52,22 @@ init_segment_filename='init_$RepresentationID$.m4s'
        -re -i $input \
        -flags +global_header \
        -r $frame_rate_num/$frame_rate_den \
-       -af aresample=async=1 \
-       -c:v libx264 \
-       -preset medium \
+       -af "aresample=async=1" \
        -vf "settb=AVTB,\
-              setpts='trunc(PTS/1K)*1K+st(1,trunc(RTCTIME/1K))-1K*trunc(ld(1)/1K)', \
-              drawtext=rate=30:text='%{localtime}.%{eif\:1M*t-1K*trunc(t*1K)\:d}:' \
-              x=300:y=300:fontfile=./Linebeam.ttf:fontsize=48:fontcolor='white':boxcolor=0x00AAAAAA:box=1" \
-       -s $output_resolution \
+       setpts='trunc(PTS/1K)*1K+st(1,trunc(RTCTIME/1K))-1K*trunc(ld(1)/1K)', \
+       drawtext=rate=30:text='%{localtime}.%{eif\:1M*t-1K*trunc(t*1K)\:d}:' \
+       x=300:y=300:fontfile=./Linebeam.ttf:fontsize=48:fontcolor='white':boxcolor=0x00AAAAAA:box=1" \
        -pix_fmt yuv420p \
+       -c:a aac \
+       -b:a $audio_bitrate \
+       -c:v libx264 \
        -b:v $video_bitrate \
+       -preset medium \
+       -s $output_resolution \
        -sc_threshold 0 \
        -force_key_frames "expr:gte(t,n_forced*"$segment_size_in_seconds")" \
        -bf 0 \
        -x264opts scenecut=-1:rc_lookahead=0 \
-       -c:a aac \
-       -b:a $audio_bitrate \
        -seg_duration $segment_size_in_seconds \
        -use_timeline 0 \
        -streaming 1 \
