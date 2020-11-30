@@ -381,10 +381,11 @@ static connection *claim_connection(char *url, int need_new_connection) {
     }
     int64_t lowest_release_time = av_gettime() / 1000;
     int conn_nr = -1;
+    pthread_mutex_lock(&connections_mutex);
+
     connection *conn = NULL;
     connection *conn_l = connections;
     size_t len;
-    pthread_mutex_lock(&connections_mutex);
 
     while (conn_l) {
         if (!conn_l->claimed) {
