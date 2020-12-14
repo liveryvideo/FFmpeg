@@ -55,8 +55,20 @@ static pthread_mutex_t connections_mutex = PTHREAD_MUTEX_INITIALIZER;
 static stats *chunk_write_time_stats;
 static stats *conn_count_stats;
 
+static int should_stop_var;
+static pthread_mutex_t stop_mutex = PTHREAD_MUTEX_INITIALIZER;;
+
 //defined here because it has a circular dependency with retry()
 static void *thr_io_close(connection *conn);
+
+static int should_stop(void) {
+    int ret = 0;
+    pthread_mutex_lock(&stop_mutex);
+    ret = should_stop_var;
+    pthread_mutex_unlock(&stop_mutex);
+
+    return ret;
+}
 
 /* This method expects the lock to be already done.*/
 static void release_request(connection *conn) {
@@ -67,6 +79,7 @@ static void release_request(connection *conn) {
         for(int i = 0; i < conn->nr_of_chunks; i++) {
             chunk *chunk = conn->chunks_ptr[i];
             free(chunk->buf);
+            free(chunk);
         }
         av_freep(&conn->chunks_ptr);
         av_dict_free(&conn->options);
@@ -88,12 +101,7 @@ static void abort_if_needed(int mustSucceed) {
     }
 }
 
-static void force_release_connection(connection *conn) {
-    pthread_mutex_lock(&connections_mutex);
-    conn->opened = 0;
-    release_request(conn);
-    pthread_mutex_unlock(&connections_mutex);
-}
+
 
 static void write_chunk(connection *conn, int chunk_nr) {
     int64_t start_time_ms;
@@ -328,7 +336,7 @@ static void *thr_io_close(connection *conn) {
 
     pthread_mutex_lock(&connections_mutex);
     release_request(conn);
-    if (conn->opened == 0) {
+    if (conn->opened == 0 || should_stop()) {
         remove_conn(conn);
         //The thread will be stopped at this point
     }
@@ -575,7 +583,7 @@ void pool_io_close(AVFormatContext *s, char *filename, int conn_nr) {
     pthread_mutex_unlock(&conn->chunks_mutex);
 }
 
-void pool_free(AVFormatContext *s, int conn_nr) {
+static void pool_free(AVFormatContext *s, int conn_nr) {
     connection *conn;
 
     if (conn_nr < 0) {
@@ -587,14 +595,42 @@ void pool_free(AVFormatContext *s, int conn_nr) {
     av_log(NULL, AV_LOG_DEBUG, "pool_free conn_nr: %d\n", conn_nr);
 
     ff_format_io_close(s, &conn->out);
-    force_release_connection(conn);
+
+    pthread_mutex_lock(&connections_mutex);
+    conn->opened = 0;
+    release_request(conn);
+    pthread_mutex_unlock(&connections_mutex);
 }
 
 void pool_free_all(AVFormatContext *s) {
     connection *conn = connections;
+    int all_conns_done = 0;
 
-    av_log(NULL, AV_LOG_DEBUG, "pool_free_all\n");
+    av_log(NULL, AV_LOG_INFO, "pool_free_all\n");
 
+
+    // Signal the connections to close
+    pthread_mutex_lock(&stop_mutex);
+    should_stop_var = 1;
+    pthread_mutex_unlock(&stop_mutex);
+
+    av_log(NULL, AV_LOG_INFO, "pool_free_all waiting for requests to finish\n");
+
+    while (!all_conns_done) {
+        pthread_mutex_lock(&connections_mutex);
+        all_conns_done = 1;
+        while (conn) {
+            if (conn->claimed) {
+                all_conns_done = 0;
+            }
+            conn = conn->next;
+        }
+        pthread_mutex_unlock(&connections_mutex);
+
+        usleep(10000);
+    }
+
+    av_log(NULL, AV_LOG_INFO, "pool_free_all free memory\n");
     while (conn) {
         if (conn->out)
             pool_free(s, conn->nr);
