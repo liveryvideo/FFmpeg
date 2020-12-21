@@ -109,7 +109,7 @@ jobs:
               --enable-libsvthevc \
               --enable-libsrt \
               --extra-libs="-lpthread -lm" \
-              --pkg-config-flags=--static
+              --pkg-config-flags=--static \
               --prefix="output"
       - run:
           name: make
