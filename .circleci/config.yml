@@ -110,12 +110,26 @@ jobs:
               --enable-libsrt \
               --extra-libs="-lpthread -lm" \
               --pkg-config-flags=--static
+              --prefix="output"
       - run:
           name: make
           command: |
             make -j2
             mkdir /tmp/artifacts
+      - run:
+          name: make install
+          command: |
+            make install
+      - run:
+          name: create libs zip
+          command: |
+            zip -r -1 ffmpeglib.zip output/lib/ output/include/
+      - run:
+          name: move artifacts
+          command: |
+            mkdir /tmp/artifacts
             cp ffmpeg_g /tmp/artifacts
             cp /tmp/srt/libsrt.so* /tmp/artifacts
+            cp ffmpeglib.zip /tmp/artifacts
       - store_artifacts:
           path: /tmp/artifacts
