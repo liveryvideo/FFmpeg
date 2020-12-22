@@ -123,7 +123,8 @@ jobs:
       - run:
           name: create libs zip
           command: |
-            zip -r -1 ffmpeglib.zip output/lib/ output/include/
+            cd output
+            zip -r -1 ffmpeglib.zip lib/ include/
       - run:
           name: move artifacts
           command: |
