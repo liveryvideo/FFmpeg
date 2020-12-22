@@ -131,6 +131,6 @@ jobs:
             mkdir /tmp/artifacts
             cp ffmpeg_g /tmp/artifacts
             cp /tmp/srt/libsrt.so* /tmp/artifacts
-            cp ffmpeglib.zip /tmp/artifacts
+            cp output/ffmpeglib.zip /tmp/artifacts
       - store_artifacts:
           path: /tmp/artifacts
