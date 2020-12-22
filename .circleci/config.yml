@@ -124,7 +124,7 @@ jobs:
           name: create libs zip
           command: |
             cd output
-            zip -r -1 ffmpeglib.zip lib/ include/
+            zip -r -1 ffmpeglib.zip lib/ include/ /tmp/vmaf/wrapper/
       - run:
           name: move artifacts
           command: |
