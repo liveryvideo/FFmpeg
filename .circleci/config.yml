@@ -14,75 +14,11 @@ workflows:
 jobs:
   compile:
     docker:
-      - image: ubuntu:18.04
+      - image: joepexmg/livery-docker-primary:0.0.1
+        auth:
+          username: joepexmg
+          password: $DOCKERHUB_PASSWORD_JOEPEXMG
     steps:
-      - run:
-          name: dependencies
-          command: |
-            apt-get update
-            apt-get install -y \
-              alsa \
-              apt-utils \
-              automake \
-              autoconf \
-              build-essential \
-              cmake \
-              dkms \
-              git-core \
-              libasound2-dev \
-              libass-dev \
-              libfreetype6-dev \
-              libgl1-mesa-glx \
-              libgl1 \
-              libpulse-dev \
-              libssl-dev \
-              libtool \
-              libva-dev \
-              libva2 \
-              libva-drm2 \
-              libva-x11-2 \
-              libxv1 \
-              libx264-152 \
-              libx264-dev \
-              nasm \
-              pkg-config \
-              pulseaudio \
-              texinfo \
-              yasm \
-              zlib1g-dev \
-              zip
-      - run:
-          name: vmaf
-          command: |
-            cd /tmp
-            git clone https://github.com/Netflix/vmaf.git
-            cd vmaf
-            git checkout tags/v1.3.15
-            cd ptools
-            make
-            cd ../wrapper
-            make -j8
-            cd ..
-            sudo make install
-      - run:
-          name: SVT
-          command: |
-            cd /tmp
-            git clone https://github.com/OpenVisualCloud/SVT-HEVC.git
-            cd SVT-HEVC/Build/linux
-            ./build.sh release static install
-      - run:
-          name: SRT
-          command: |
-            export DEBIAN_FRONTEND=noninteractive
-            apt install -y tclsh
-            cd /tmp
-            git clone https://github.com/Haivision/srt.git
-            cd srt
-            git checkout tags/v1.4.1
-            ./configure --disable-apps
-            make
-            make install
       - checkout
       - run:
           name: configure
@@ -107,7 +43,6 @@ jobs:
               --enable-libfreetype \
               --enable-fontconfig \
               --enable-libvmaf \
-              --enable-libsvthevc \
               --enable-libsrt \
               --extra-libs="-lpthread -lm" \
               --pkg-config-flags=--static \
@@ -124,13 +59,12 @@ jobs:
           name: create libs zip
           command: |
             cd output
-            zip -r -1 ffmpeglib.zip lib/ include/ /tmp/vmaf/wrapper/
+            zip -r -1 ffmpeglib.zip lib/ include/
       - run:
           name: move artifacts
           command: |
             mkdir /tmp/artifacts
             cp ffmpeg_g /tmp/artifacts
-            cp /tmp/srt/libsrt.so* /tmp/artifacts
             cp output/ffmpeglib.zip /tmp/artifacts
       - store_artifacts:
           path: /tmp/artifacts
