@@ -42,6 +42,7 @@ jobs:
               --enable-vaapi \
               --enable-libfreetype \
               --enable-fontconfig \
+              --enable-libsrt \
               --extra-libs="-lpthread -lm" \
               --pkg-config-flags=--static \
               --prefix="output"
