@@ -14,7 +14,7 @@ workflows:
 jobs:
   compile:
     docker:
-      - image: joepexmg/livery-docker-primary:0.0.3
+      - image: joepexmg/livery-docker-primary:0.0.6
         auth:
           username: joepexmg
           password: $DOCKERHUB_PASSWORD_JOEPEXMG
@@ -42,6 +42,7 @@ jobs:
               --enable-vaapi \
               --enable-libfreetype \
               --enable-fontconfig \
+              --enable-libvmaf \
               --enable-libsrt \
               --extra-libs="-lpthread -lm" \
               --pkg-config-flags=--static \
