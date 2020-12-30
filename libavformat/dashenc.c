@@ -194,6 +194,7 @@ typedef struct DASHContext {
 
     int http_retry;
     int finish_stream;
+    int new_seg_on_keyframe;
     int first_mpd_written; /* used to log some details the first time the mpd is written */
     stats *time_stats;
     int64_t suggested_presentation_delay;
@@ -646,6 +647,8 @@ static void dash_free(AVFormatContext *s)
 {
     DASHContext *c = s->priv_data;
     int i, j;
+
+    av_log(s, AV_LOG_INFO, "dashenc.c dash_free\n");
 
     if (c->as) {
         for (i = 0; i < c->nb_as; i++) {
@@ -2225,8 +2228,8 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
     // invoke its heuristic (this doesn't have to be identical to that algorithm),
     // so that we know the exact timestamps of fragments.
     if (!pkt->duration && os->last_dts != AV_NOPTS_VALUE) {
-        av_log(s, AV_LOG_INFO, "Joep changing pkt duration\n");
         pkt->duration = pkt->dts - os->last_dts;
+        av_log(s, AV_LOG_INFO, "Joep changing pkt duration to: %" PRId64 ", pkt-dts: %" PRId64 ", last_dts%" PRId64 "\n", pkt->duration, pkt->dts, os->last_dts);
     }
 
     os->last_dts = pkt->dts;
@@ -2330,10 +2333,11 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
         os->coding_dependency |= os->parser->pict_type != AV_PICTURE_TYPE_I;
     }
 
-    if (pkt->flags & AV_PKT_FLAG_KEY && os->packets_written &&
-        av_compare_ts(elapsed_duration, st->time_base,
-                      seg_end_duration, AV_TIME_BASE_Q) >= 0) {
+    if (pkt->flags & AV_PKT_FLAG_KEY && os->packets_written && st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+       (c->new_seg_on_keyframe || av_compare_ts(elapsed_duration, st->time_base, seg_end_duration, AV_TIME_BASE_Q) >= 0)) {
         if (!c->has_video || st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+
+            av_log(s, AV_LOG_INFO, "-----------------Key frame, pts: %" PRId64 ", c->has_video: %d, isvideo:%d, new_seg_on_keyframe: %d\n", pkt->pts, c->has_video, st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO, c->new_seg_on_keyframe);
             c->last_duration = av_rescale_q(pkt->pts - os->start_pts,
                     st->time_base,
                     AV_TIME_BASE_Q);
@@ -2605,6 +2609,7 @@ static const AVOption options[] = {
 
     { "http_retry", "Retry HTTP requests if they fail", OFFSET(http_retry), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, E },
     { "finish_stream", "Write one last mpd update when ffmpeg exits", OFFSET(finish_stream), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, E },
+    { "new_seg_on_keyframe", "Create a new segment without looking at the time that has passed", OFFSET(new_seg_on_keyframe), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, E },
     { "suggested_presentation_delay", "SuggestedPresentationDelay (in seconds, fractional value can be set)", OFFSET(suggested_presentation_delay ), AV_OPT_TYPE_DURATION, { .i64 = 5000000 }, 0, INT_MAX, E },
 
     { "write_prft", "Write producer reference time element", OFFSET(write_prft), AV_OPT_TYPE_BOOL, {.i64 = -1}, -1, 1, E},
