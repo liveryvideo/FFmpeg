@@ -35,6 +35,12 @@ export FF_EXMG_SECURE_SYNC_FRAGMENTS_PER_KEY="30" # amount of fragments per key-
 export FF_EXMG_SECURE_SYNC_MQTT_PUB=1 # anything set will enable MQTT key-pub
 export FF_EXMG_SECURE_SYNC_FS_PUB_BASEPATH=$output/ # ending slash is mandatory (or empty string "") / unset to disable fs key-pub 
 
+export FF_EXMG_MQTT_URL="ws://xvm-190-41.dc0.ghst.net:8885/mqtt"
+export FF_EXMG_MQTT_CLIENTID="exmg-mqtt-ffmpeg-default-client-id"
+export FF_EXMG_MQTT_USERNAME="user1"
+export FF_EXMG_MQTT_PASSWD="liverymqtt123"
+export FF_EXMG_MQTT_TOPIC="/mqtt"
+
 echo ""
 echo "Output path: $output"
 echo ""
