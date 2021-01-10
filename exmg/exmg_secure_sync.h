@@ -300,7 +300,21 @@ static void exmg_secure_sync_enc_session_init(ExmgSecureSyncEncSession **session
     session->fs_pub_basepath = getenv("FF_EXMG_SECURE_SYNC_FS_PUB_BASEPATH");
 
     if (getenv("FF_EXMG_SECURE_SYNC_MQTT_PUB") != NULL) {
-        ExmgMqttServiceInfo mqtt_srv_info = EXMG_MQTT_SERVICE_INFO_DEFAULT_INIT;
+
+        ExmgMqttServiceInfo mqtt_srv_info;
+        mqtt_srv_info.url = getenv("FF_EXMG_MQTT_URL");
+        mqtt_srv_info.pub_conf.client_id = getenv("FF_EXMG_MQTT_CLIENTID");
+        mqtt_srv_info.pub_conf.user = getenv("FF_EXMG_MQTT_USERNAME");
+        mqtt_srv_info.pub_conf.passwd = getenv("FF_EXMG_MQTT_PASSWD");
+        mqtt_srv_info.pub_conf.topic = getenv("FF_EXMG_MQTT_TOPIC");
+
+        if (!mqtt_srv_info.url || !mqtt_srv_info.pub_conf.client_id
+            || !mqtt_srv_info.pub_conf.user || !mqtt_srv_info.pub_conf.passwd
+            || !mqtt_srv_info.pub_conf.topic) {
+            av_log(NULL, AV_LOG_FATAL, "MQTT service info is not complete, please verify config.");
+            exit(1);
+        }
+
         ExmgMqttPubConfig mqtt_config = mqtt_srv_info.pub_conf;
         exmg_mqtt_pub_context_init(&session->mqtt_pub_ctx, mqtt_srv_info.url, mqtt_config);
         if (!session->mqtt_pub_ctx->is_connected) {

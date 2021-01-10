@@ -15,13 +15,6 @@
 #define MQTT_VERSION MQTTVERSION_3_1_1
 #define MQTT_CLIENT_DISCONNECT_TIMEOUT_MS 2000
 
-// MQTT config (defaults)
-#define EXMG_MQTT_URL "ws://xvm-190-41.dc0.ghst.net:8885/mqtt"
-#define EXMG_MQTT_CLIENTID "exmg-mqtt-ffmpeg-default-client-id"
-#define EXMG_MQTT_USERNAME "user1"
-#define EXMG_MQTT_PASSWD "liverymqtt123"
-#define EXMG_MQTT_TOPIC "/mqtt"
-
 typedef struct ExmgMqttPubConfig {
     const char* client_id;
     const char* user;
@@ -154,8 +147,8 @@ static int exmg_mqtt_pub_connect(ExmgMqttPubContext *ctx)
     MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
     conn_opts.MQTTVersion = MQTT_VERSION;
     conn_opts.keepAliveInterval = 1;
-    conn_opts.username = EXMG_MQTT_USERNAME;
-    conn_opts.password = EXMG_MQTT_PASSWD;
+    conn_opts.username = ctx->config.user;
+    conn_opts.password = ctx->config.passwd;
     conn_opts.cleansession = 1;
 
     MQTTClient_SSLOptions ssl_opts = MQTTClient_SSLOptions_initializer;
