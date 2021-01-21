@@ -472,7 +472,7 @@ static int pool_flush_dynbuf(DASHContext *c, OutputStream *os, int *range_length
 //static int flush_dynbuf(DASHContext *c, OutputStream *os, int *range_length)
 {
     uint8_t *buffer;
-    int ret;
+    // int ret;
 
     if (!os->ctx->pb) {
         return AVERROR(EINVAL);
@@ -487,15 +487,16 @@ static int pool_flush_dynbuf(DASHContext *c, OutputStream *os, int *range_length
         *range_length = avio_close_dyn_buf(os->ctx->pb, &buffer);
         os->ctx->pb = NULL;
 
-        ret = pool_avio_write(buffer + os->written_len, *range_length - os->written_len, os->conn_nr);
+        pool_write_flush(buffer + os->written_len, *range_length - os->written_len, os->conn_nr);
+        // ret = pool_avio_write(buffer + os->written_len, *range_length - os->written_len, os->conn_nr);
 
         os->written_len = 0;
         av_free(buffer);
 
-        if (ret < 0) {
-            avio_open_dyn_buf(&os->ctx->pb);
-            return ret;
-        }
+        // if (ret < 0) {
+        //     avio_open_dyn_buf(&os->ctx->pb);
+        //     return ret;
+        // }
 
         // re-open buffer
         return avio_open_dyn_buf(&os->ctx->pb);
