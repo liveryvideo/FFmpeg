@@ -874,7 +874,7 @@ static int write_adaptation_set(AVFormatContext *s, AVIOContext *out, int as_ind
     avio_printf(out, ">\n");
 
     if (!final && c->ldash && as->max_frag_duration && !(c->profile & MPD_PROFILE_DVB))
-        avio_printf(out, "\t\t\t<Resync dT=\"%"PRId64"\" type=\"0\"/>\n", as->max_frag_duration);
+        avio_printf(out, "\t\t\t<Resync dT=\"%"PRId64"\" type=\"0\"/>\n", as->seg_duration);
     if (as->trick_idx >= 0)
         avio_printf(out, "\t\t\t<EssentialProperty id=\"%d\" schemeIdUri=\"http://dashif.org/guidelines/trickmode\" value=\"%d\"/>\n", as->id, as->trick_idx);
     role = av_dict_get(as->metadata, "role", NULL, 0);
@@ -1271,7 +1271,7 @@ static int write_manifest(AVFormatContext *s, int final)
             avio_printf(out, "\tpublishTime=\"%s\"\n", now_str);
         if (c->window_size && c->use_template) {
             avio_printf(out, "\ttimeShiftBufferDepth=\"");
-            write_time(out, c->last_duration * c->window_size);
+            write_time(out, c->seg_duration * c->window_size);
             avio_printf(out, "\"\n");
         }
     }
@@ -1279,7 +1279,7 @@ static int write_manifest(AVFormatContext *s, int final)
     write_time(out, c->max_segment_duration);
     avio_printf(out, "\"\n");
     avio_printf(out, "\tminBufferTime=\"");
-    write_time(out, c->ldash && c->max_gop_size ? c->max_gop_size : c->last_duration * 2);
+    write_time(out, c->ldash && c->max_gop_size ? c->seg_duration : c->last_duration * 2);
     avio_printf(out, "\">\n");
     avio_printf(out, "\t<ProgramInformation>\n");
     if (title) {
@@ -2022,7 +2022,7 @@ static int dash_flush(AVFormatContext *s, int final, int stream)
 
     for (i = 0; i < s->nb_streams; i++) {
         OutputStream *os = &c->streams[i];
-        AVStream *st = s->streams[i];
+        // AVStream *st = s->streams[i];
         int range_length, index_length = 0;
         int64_t duration;
 
@@ -2065,7 +2065,8 @@ static int dash_flush(AVFormatContext *s, int final, int stream)
             }
         }
 
-        duration = av_rescale_q(os->max_pts - os->start_pts, st->time_base, AV_TIME_BASE_Q);
+        // duration = av_rescale_q(os->max_pts - os->start_pts, st->time_base, AV_TIME_BASE_Q);
+        duration = os->seg_duration;
         os->last_duration = FFMAX(os->last_duration, duration);
 
         if (!os->muxer_overhead && os->max_pts > os->start_pts)
