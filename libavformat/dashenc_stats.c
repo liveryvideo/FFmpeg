@@ -91,4 +91,5 @@ stats *init_time_stats(const char *name, int logInterval)
 void free_time_stats(stats *stats)
 {
     pthread_mutex_destroy(&stats->stats_lock);
+    free(stats);
 }

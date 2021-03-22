@@ -686,7 +686,9 @@ static void dash_free(AVFormatContext *s)
         av_freep(&os->single_file_name);
         av_freep(&os->init_seg_name);
         av_freep(&os->media_seg_name);
+        free_time_stats(os->bitrate_stats);
     }
+    free_time_stats(c->time_stats);
     av_freep(&c->streams);
 
     //ff_format_io_close(s, &c->mpd_out);
@@ -2480,6 +2482,7 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
         uint8_t *buf = NULL;
 
         print_stats(c, os, pkt);
+        // printf("dashenc.c pts: %lu\n", pkt->pts);
 
         avio_flush(os->ctx->pb);
         len = avio_get_dyn_buf (os->ctx->pb, &buf);
