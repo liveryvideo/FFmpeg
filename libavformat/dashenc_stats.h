@@ -20,4 +20,4 @@ void print_total_stats(stats *stats, int64_t value);
 stats *init_time_stats(const char *name, int logInterval);
 void free_time_stats(stats *stats);
 
-#endif /* AVFORMAT_DASH_HTTP_H */
+#endif /* AVFORMAT_DASH_STATS_H */
