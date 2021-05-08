@@ -276,7 +276,7 @@ static void* exmg_secure_sync_worker(void *user_data)
 {
     ExmgSecureSyncEncSession *s = (ExmgSecureSyncEncSession*) user_data;
 
-    // FIXME: instead of a sleep, we should use cond/wait thread signaling here
+    // TODO: instead of a sleep, we could use cond/wait thread signaling here
 
     unsigned int delay = EXMG_MESSAGE_QUEUE_WORKER_POLL * 1000000;
     while(1) {
@@ -298,6 +298,15 @@ static void exmg_secure_sync_enc_session_init(ExmgSecureSyncEncSession **session
     session->is_encryption_enabled = getenv("FF_EXMG_SECURE_SYNC_NO_ENCRYPTION") == NULL;
 
     session->fs_pub_basepath = getenv("FF_EXMG_SECURE_SYNC_FS_PUB_BASEPATH");
+    const char* fs_pub_max_age = getenv("FF_EXMG_SECURE_SYNC_FS_PUB_MAX_AGE_SECONDS");
+    if (fs_pub_max_age != NULL) {
+        int max_age = atoi(fs_pub_max_age);
+        if (max_age > UINT16_MAX) {
+            av_log(NULL, AV_LOG_FATAL, "MQTT service info is not complete, please verify config.");
+            exit(1);
+        }
+        session->fs_pub_max_age_seconds = max_age;
+    }
 
     if (getenv("FF_EXMG_SECURE_SYNC_MQTT_PUB") != NULL) {
 

@@ -36,6 +36,8 @@ typedef struct ExmgSecureSyncEncSession {
     int key_index_max_window;
 
     const char* fs_pub_basepath;
+    uint16_t fs_pub_max_age_seconds;
+
     ExmgMqttPubContext *mqtt_pub_ctx;
 
 } ExmgSecureSyncEncSession;

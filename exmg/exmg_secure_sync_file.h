@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string.h>
+#include <stdlib.h>
 
 #include "libavutil/log.h"
 
@@ -110,7 +111,25 @@ static int exmg_secure_sync_file_write_line(const char *path, const uint8_t *dat
     return 1;
 }
 
+static void exmg_secure_sync_cleanup_key_message_files(ExmgSecureSyncEncSession* session, uint16_t older_than_seconds) {
+    #define CMD_FMT "find %s -name *.json -ctime +%ds -type f -delete"
+    const char *base_dir = session->fs_pub_basepath;
+    size_t cmd_len = strlen(CMD_FMT) + strlen(base_dir) + 5 + 1; // 5 digits for 10-base 2^16 value + zero-char end-of-string
+    const char* cmd_buf = malloc(cmd_len);
+    int err = snprintf(cmd_buf, cmd_len, CMD_FMT,
+        base_dir,
+        older_than_seconds);
+    if (err < 0 || err >= cmd_len) {
+        av_log(session->mov, AV_LOG_ERROR, "Fatal error preparing cleanup of key-message base-dir!\n");
+        exit(1);
+    }
+    if (system(cmd_buf) != 0) {
+        av_log(session->mov, AV_LOG_ERROR, "Fatal error cleaning up key-message base-dir! (Using system command: %s)\n", cmd_buf);
+        exit(1);
+    }
+}
 
+#define EXMG_KEY_MESSAGE_FILENAME_TEMPLATE "exmg_key_%s_%d_%ld.json"
 
 /**
  * Will determine exact semantic filename based on message data buffer, and given track metadata.
@@ -122,7 +141,8 @@ static int exmg_secure_sync_file_write_line(const char *path, const uint8_t *dat
 static void exmg_secure_sync_publish_key_message_to_file(ExmgSecureSyncEncSession* session,
     uint8_t* message_buffer, MOVTrack* track, int64_t message_media_time) {
 
-    #define KEY_MESSAGE_FILENAME_TEMPLATE "exmg_key_%s_%d_%ld.json"
+    exmg_secure_sync_cleanup_key_message_files(session,
+        session->fs_pub_max_age_seconds);
 
     const char *base_dir = session->fs_pub_basepath;
 
@@ -133,9 +153,9 @@ static void exmg_secure_sync_publish_key_message_to_file(ExmgSecureSyncEncSessio
     strcat(index_path, "exmg_key_index_");
     strcat(index_path, media_type); // we open one file per media-index to avoid concurrent access across the various movenc instances/thread-loops
 
-    char *filename_template = (char*) malloc(strlen(base_dir) + strlen(KEY_MESSAGE_FILENAME_TEMPLATE) + 1);
+    char *filename_template = (char*) malloc(strlen(base_dir) + strlen(EXMG_KEY_MESSAGE_FILENAME_TEMPLATE) + 1);
     strcpy(filename_template, base_dir);
-    strcat(filename_template, KEY_MESSAGE_FILENAME_TEMPLATE);
+    strcat(filename_template, EXMG_KEY_MESSAGE_FILENAME_TEMPLATE);
 
     int filename_len = strlen(filename_template) + 256; // we add 256 chars of leeway for the semantics we print in
     char *filename = (char*) malloc(filename_len + 1);
@@ -168,4 +188,8 @@ static void exmg_secure_sync_publish_key_message_to_file(ExmgSecureSyncEncSessio
 
     free(index_path);
     free(filename);
+
+
 }
+
+
