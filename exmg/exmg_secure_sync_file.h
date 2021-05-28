@@ -112,13 +112,28 @@ static int exmg_secure_sync_file_write_line(const char *path, const uint8_t *dat
 }
 
 static void exmg_secure_sync_cleanup_key_message_files(ExmgSecureSyncEncSession* session, uint16_t older_than_seconds) {
+
+    #ifdef __APPLE__
     #define CMD_FMT "find %s -name *.json -ctime +%ds -type f -delete"
+    #else
+    #define CMD_FMT "find %s -name *.json -cmin +%.2f -type f -delete"
+    #endif
+
     const char *base_dir = session->fs_pub_basepath;
     size_t cmd_len = strlen(CMD_FMT) + strlen(base_dir) + 5 + 1; // 5 digits for 10-base 2^16 value + zero-char end-of-string
     const char* cmd_buf = malloc(cmd_len);
+
+    #ifdef __APPLE__
     int err = snprintf(cmd_buf, cmd_len, CMD_FMT,
         base_dir,
         older_than_seconds);
+    #else
+    float older_than_mins = ((float) older_than_seconds) / 60.0f;
+    int err = snprintf(cmd_buf, cmd_len, CMD_FMT,
+        base_dir,
+        older_than_mins);
+    #endif
+
     if (err < 0 || err >= cmd_len) {
         av_log(session->mov, AV_LOG_ERROR, "Fatal error preparing cleanup of key-message base-dir!\n");
         exit(1);
