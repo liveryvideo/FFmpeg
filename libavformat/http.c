@@ -1683,6 +1683,7 @@ static int http_shutdown(URLContext *h, int flags)
     HTTPContext *s = h->priv_data;
     int64_t curr_time_ms;
     int64_t req_time_ms;
+    s->http_code = -1;
 
     /* signal end of chunked encoding if used */
     if (((flags & AVIO_FLAG_WRITE) && s->chunked_post) ||
@@ -1693,50 +1694,14 @@ static int http_shutdown(URLContext *h, int flags)
         if (!(flags & AVIO_FLAG_READ)) {
             char buf[1024];
             int read_ret;
-            int status_code = -1;
-            char *p, *end;
+            int new_location;
             //s->hd->flags |= AVIO_FLAG_NONBLOCK;
 
-            while (status_code == -1) {
-                /* calls avio.c->ffurl_read() */
-                read_ret = ffurl_read(s->hd, buf, sizeof(buf));
-
-                if (read_ret < 1)  {
-                    status_code = 0;
-                    s->http_code = 0;
-                } else {
-                    //Find start of http status code
-                    p = strstr(buf, "HTTP");
-	                if (p == NULL)
-                        continue;
-
-                    while (*p != '/' && *p != '\0')
-                        p++;
-                    while (*p == '/')
-                        p++;
-                    while (!av_isspace(*p) && *p != '\0')
-                        p++;
-                    while (av_isspace(*p))
-                        p++;
-
-                    status_code = strtol(p, &end, 10);
-                    if (status_code == 0) {
-                        status_code = -1;
-                    } else {
-                        s->http_code = status_code;
-                    }
-                }
-            }
+            read_ret = http_read_header(h, &new_location);
 
             curr_time_ms = av_gettime() / 1000;
             req_time_ms = curr_time_ms - s->start_time_ms;
             av_log(h, AV_LOG_INFO, "HTTP response: %d, duration: %"PRId64", url: %s \n", s->http_code, req_time_ms, s->location);
-            if (s->http_code >= 400) {
-                av_log(h, AV_LOG_INFO, "HTTP response. url: %s, data: [%s]\n", s->location, buf);
-            }
-            if (s->http_code == 0) {
-                av_log(h, AV_LOG_INFO, "HTTP response. url: %s\n", s->location);
-            }
 
             if (read_ret < 0 && read_ret != AVERROR(EAGAIN))
                 ret = read_ret;
