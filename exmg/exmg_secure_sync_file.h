@@ -121,7 +121,7 @@ static void exmg_secure_sync_cleanup_key_message_files(ExmgSecureSyncEncSession*
 
     const char *base_dir = session->fs_pub_basepath;
     size_t cmd_len = strlen(CMD_FMT) + strlen(base_dir) + 5 + 1; // 5 digits for 10-base 2^16 value + zero-char end-of-string
-    const char* cmd_buf = malloc(cmd_len);
+    char* cmd_buf = malloc(cmd_len);
 
     #ifdef __APPLE__
     int err = snprintf(cmd_buf, cmd_len, CMD_FMT,
@@ -138,9 +138,11 @@ static void exmg_secure_sync_cleanup_key_message_files(ExmgSecureSyncEncSession*
         av_log(session->mov, AV_LOG_ERROR, "Fatal error preparing cleanup of key-message base-dir!\n");
         exit(1);
     }
-    if (system(cmd_buf) != 0) {
-        av_log(session->mov, AV_LOG_ERROR, "Fatal error cleaning up key-message base-dir! (Using system command: %s)\n", cmd_buf);
-        exit(1);
+    int cmd_ret = system(cmd_buf);
+    free(cmd_buf);
+    if (cmd_ret != 0) {
+        av_log(session->mov, AV_LOG_WARNING, "Fatal error cleaning up key-message base-dir! (Using system command: %s)\n", cmd_buf);
+        exmg_secure_sync_cleanup_key_message_files(session, older_than_seconds);
     }
 }
 
