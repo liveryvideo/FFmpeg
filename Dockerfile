@@ -38,6 +38,14 @@ RUN \
     yasm \
     zlib1g-dev
 
+# CircleCI
+RUN apt-get install -y \
+    git \
+    openssh-client \
+    ca-certificates \
+    tar \
+    zip
+
 # Setup vmaf
 RUN cd /tmp;git clone https://github.com/Netflix/vmaf.git;cd vmaf/ptools;make;cd ../wrapper;make -j8;cd ..;sudo make install;cd /app
 

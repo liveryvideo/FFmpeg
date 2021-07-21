@@ -2286,8 +2286,9 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
         av_log(s, AV_LOG_INFO, "----------------------------------------\n");
     }
 
-    if (!os->packets_written)
-        os->availability_time_offset = 0;
+    //LLS-3292 don't reset availability_time_offset between segments
+    // if (!os->packets_written)
+    //     os->availability_time_offset = 0;
 
     if (!os->availability_time_offset &&
         ((os->frag_type == FRAG_TYPE_DURATION && os->seg_duration != os->frag_duration) ||
