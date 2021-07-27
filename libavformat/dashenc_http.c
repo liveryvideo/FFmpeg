@@ -73,7 +73,7 @@ static int should_stop(void) {
 /* This method expects the lock to be already done.*/
 static void release_request(connection *conn) {
     int64_t release_time = av_gettime() / 1000;
-    av_log(NULL, AV_LOG_INFO, "release_request conn_nr: %d.\n", conn->nr);
+    av_log(NULL, AV_LOG_DEBUG, "release_request conn_nr: %d.\n", conn->nr);
 
     if (conn->claimed) {
         free(conn->url);
@@ -304,7 +304,7 @@ static void *thr_io_close(connection *conn) {
     int ret;
     int response_code;
 
-    av_log(NULL, AV_LOG_INFO, "thr_io_close conn_nr: %d, out_addr: %p \n", conn->nr, conn->out);
+    av_log(NULL, AV_LOG_DEBUG, "thr_io_close conn_nr: %d, out_addr: %p \n", conn->nr, conn->out);
 
     if (conn->opened_error) {
         ret = -1;
@@ -400,7 +400,7 @@ static void *thr_io_write(void *arg) {
  */
 static connection *claim_connection(char *url, int need_new_connection) {
     if (url == NULL) {
-        av_log(NULL, AV_LOG_INFO, "Claimed conn_id: -1, url: NULL\n");
+        av_log(NULL, AV_LOG_DEBUG, "Claimed conn_id: -1, url: NULL\n");
         return NULL;
     }
     int64_t lowest_release_time = av_gettime() / 1000;
@@ -475,7 +475,7 @@ static connection *claim_connection(char *url, int need_new_connection) {
         conn->opened = 0;
         ff_format_io_close(conn->s, &conn->out);
     }
-    av_log(NULL, AV_LOG_INFO, "Claimed conn_id: %d, url: %s\n", conn_nr, url);
+    av_log(NULL, AV_LOG_DEBUG, "Claimed conn_id: %d, url: %s\n", conn_nr, url);
     len = strlen(url) + 1;
     conn->url = malloc(len);
     av_strlcpy(conn->url, url, len);
