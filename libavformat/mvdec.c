@@ -157,6 +157,8 @@ static int parse_audio_var(AVFormatContext *avctx, AVStream *st,
         return set_channels(avctx, st, var_read_int(pb, size));
     } else if (!strcmp(name, "SAMPLE_RATE")) {
         st->codecpar->sample_rate = var_read_int(pb, size);
+        if (st->codecpar->sample_rate <= 0)
+            return AVERROR_INVALIDDATA;
         avpriv_set_pts_info(st, 33, 1, st->codecpar->sample_rate);
     } else if (!strcmp(name, "SAMPLE_WIDTH")) {
         uint64_t bpc = var_read_int(pb, size) * (uint64_t)8;
@@ -213,10 +215,12 @@ static int parse_video_var(AVFormatContext *avctx, AVStream *st,
         st->codecpar->width = var_read_int(pb, size);
     } else if (!strcmp(name, "ORIENTATION")) {
         if (var_read_int(pb, size) == 1101) {
-            st->codecpar->extradata      = av_strdup("BottomUp");
-            if (!st->codecpar->extradata)
-                return AVERROR(ENOMEM);
-            st->codecpar->extradata_size = 9;
+            if (!st->codecpar->extradata) {
+                st->codecpar->extradata = av_strdup("BottomUp");
+                if (!st->codecpar->extradata)
+                    return AVERROR(ENOMEM);
+                st->codecpar->extradata_size = 9;
+            }
         }
     } else if (!strcmp(name, "Q_SPATIAL") || !strcmp(name, "Q_TEMPORAL")) {
         var_read_metadata(avctx, name, size);
