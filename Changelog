@@ -1,47 +1,89 @@
 Entries are sorted chronologically from oldest to youngest within each release,
 releases are sorted from youngest to oldest.
 
-version 4.3.1:
- avcodec/tiff: Check input space in dng_decode_jpeg()
- avcodec/mjpeg_parser: Adjust size rejection threshold
- avcodec/cbs_jpeg: Fix uninitialized end index in cbs_jpeg_split_fragment()
- avformat/sdp: Fix potential write beyond end of buffer
- avformat/mm: Check for existence of audio stream
- avformat/mov: Fix unaligned read of uint32_t and endian-dependance in mov_read_default
- avcodec/apedec: Fix undefined integer overflow with 24bit
- avcodec/loco: Fix integer overflow with large values from loco_get_rice()
- avformat/smjpegdec: Check the existence of referred streams
- avcodec/tiff: Check frame parameters before blit for DNG
- avcodec/mjpegdec: Limit bayer to single plane outputting format
- avcodec/pnmdec: Fix misaligned reads
- avcodec/mv30: Fix integer overflows in idct2_1d()
- avcodec/hcadec: Check total_band_count against imdct_in size
- avcodec/scpr3: Fix out of array access with dectab
- avcodec/tiff: Do not overrun the array ends in dng_blit()
- avcodec/dstdec: Replace AC overread check by sample rate check
- dnn_backend_native: Add overflow check for length calculation.
- avcodec/h264_metadata_bsf: Fix invalid av_freep
- avcodec/cbs_h265: set default VUI parameters when vui_parameters_present_flag is false
- avcodec/av1_parser: initialize avctx->pix_fmt
- avcodec/av1_parser: add missing parsing for RGB pixel format signaling
- avcodec/av1_parser: set context values outside the OBU parsing loop
- avutil/avsscanf: Add () to avoid integer overflow in scanexp()
- avformat/utils: reorder duration computation to avoid overflow
- avcodec/pngdec: Check for fctl after idat
- avformat/hls: Pass a copy of the URL for probing
- avutil/common: Fix integer overflow in av_ceil_log2_c()
- avcodec/wmalosslessdec: fix overflow with pred in revert_cdlms
- avformat/mvdec: Fix integer overflow with billions of channels
- avformat/microdvddec: skip malformed lines without frame number.
- dnn_backend_native: check operand index
- dnn_backend_native.c: refine code for fail case
- avformat/mov: fix memleaks
- libavformat/mov: Fix memleaks when demuxing DV audio
- avcodec/cbs_av1: Fix writing uvlc numbers >= INT_MAX
- avformat/avc, mxfenc: Avoid allocation of H264 SPS structure, fix memleak
- avcodec/bitstream: Don't check for undefined behaviour after it happened
- avformat/aviobuf: Also return truncated buffer in avio_get_dyn_buf()
- avformat/aviobuf: Don't check for overflow after it happened
+version 4.4:
+- AudioToolbox output device
+- MacCaption demuxer
+- PGX decoder
+- chromanr video filter
+- VDPAU accelerated HEVC 10/12bit decoding
+- ADPCM IMA Ubisoft APM encoder
+- Rayman 2 APM muxer
+- AV1 encoding support SVT-AV1
+- Cineform HD encoder
+- ADPCM Argonaut Games encoder
+- Argonaut Games ASF muxer
+- AV1 Low overhead bitstream format demuxer
+- RPZA video encoder
+- ADPCM IMA MOFLEX decoder
+- MobiClip FastAudio decoder
+- MobiClip video decoder
+- MOFLEX demuxer
+- MODS demuxer
+- PhotoCD decoder
+- MCA demuxer
+- AV1 decoder (Hardware acceleration used only)
+- SVS demuxer
+- Argonaut Games BRP demuxer
+- DAT demuxer
+- aax demuxer
+- IPU decoder, parser and demuxer
+- Intel QSV-accelerated AV1 decoding
+- Argonaut Games Video decoder
+- libwavpack encoder removed
+- ACE demuxer
+- AVS3 demuxer
+- AVS3 video decoder via libuavs3d
+- Cintel RAW decoder
+- VDPAU accelerated VP9 10/12bit decoding
+- afreqshift and aphaseshift filters
+- High Voltage Software ADPCM encoder
+- LEGO Racers ALP (.tun & .pcm) muxer
+- AV1 VAAPI decoder
+- adenorm filter
+- ADPCM IMA AMV encoder
+- AMV muxer
+- NVDEC AV1 hwaccel
+- DXVA2/D3D11VA hardware accelerated AV1 decoding
+- speechnorm filter
+- SpeedHQ encoder
+- asupercut filter
+- asubcut filter
+- Microsoft Paint (MSP) version 2 decoder
+- Microsoft Paint (MSP) demuxer
+- AV1 monochrome encoding support via libaom >= 2.0.1
+- asuperpass and asuperstop filter
+- shufflepixels filter
+- tmidequalizer filter
+- estdif filter
+- epx filter
+- Dolby E parser
+- shear filter
+- kirsch filter
+- colortemperature filter
+- colorcontrast filter
+- PFM encoder
+- colorcorrect filter
+- binka demuxer
+- XBM parser
+- xbm_pipe demuxer
+- colorize filter
+- CRI parser
+- aexciter audio filter
+- exposure video filter
+- monochrome video filter
+- setts bitstream filter
+- vif video filter
+- OpenEXR image encoder
+- Simbiosis IMX decoder
+- Simbiosis IMX demuxer
+- Digital Pictures SGA demuxer and decoders
+- TTML subtitle encoder and muxer
+- identity video filter
+- msad video filter
+- gophers protocol
+- RIST protocol via librist
+
 
 version 4.3:
 - v360 filter
