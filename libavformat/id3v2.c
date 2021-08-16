@@ -605,7 +605,10 @@ static void read_apic(AVFormatContext *s, AVIOContext *pb, int taglen,
 
     /* mimetype */
     if (isv34) {
-        taglen -= avio_get_str(pb, taglen, mimetype, sizeof(mimetype));
+        int ret = avio_get_str(pb, taglen, mimetype, sizeof(mimetype));
+        if (ret < 0 || ret >= taglen)
+            goto fail;
+        taglen -= ret;
     } else {
         if (avio_read(pb, mimetype, 3) < 0)
             goto fail;
@@ -813,7 +816,7 @@ static void id3v2_parse(AVIOContext *pb, AVDictionary **metadata,
     int isv34, unsync;
     unsigned tlen;
     char tag[5];
-    int64_t next, end = avio_tell(pb) + len;
+    int64_t next, end = avio_tell(pb);
     int taghdrlen;
     const char *reason = NULL;
     AVIOContext pb_local;
@@ -824,6 +827,10 @@ static void id3v2_parse(AVIOContext *pb, AVDictionary **metadata,
     unsigned char *uncompressed_buffer = NULL;
     av_unused int uncompressed_buffer_size = 0;
     const char *comm_frame;
+
+    if (end > INT64_MAX - len - 10)
+        return;
+    end += len;
 
     av_log(s, AV_LOG_DEBUG, "id3v2 ver:%d flags:%02X len:%d\n", version, flags, len);
 
@@ -993,6 +1000,11 @@ static void id3v2_parse(AVIOContext *pb, AVDictionary **metadata,
 
                     av_log(s, AV_LOG_DEBUG, "Compresssed frame %s tlen=%d dlen=%ld\n", tag, tlen, dlen);
 
+                    if (tlen <= 0)
+                        goto seek;
+                    if (dlen / 32768 > tlen)
+                        goto seek;
+
                     av_fast_malloc(&uncompressed_buffer, &uncompressed_buffer_size, dlen);
                     if (!uncompressed_buffer) {
                         av_log(s, AV_LOG_ERROR, "Failed to alloc %ld bytes\n", dlen);
@@ -1154,7 +1166,7 @@ int ff_id3v2_parse_apic(AVFormatContext *s, ID3v2ExtraMeta *extra_meta)
 
         av_dict_set(&st->metadata, "comment", apic->type, 0);
 
-        av_init_packet(&st->attached_pic);
+        av_packet_unref(&st->attached_pic);
         st->attached_pic.buf          = apic->buf;
         st->attached_pic.data         = apic->buf->data;
         st->attached_pic.size         = apic->buf->size - AV_INPUT_BUFFER_PADDING_SIZE;

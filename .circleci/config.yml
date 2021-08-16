@@ -9,12 +9,13 @@ workflows:
             branches:
               only:  # only branches matching the below regex filters will run
                 - exmg-lls
-                - feature/circleci
+                - feature/lls3309/bumpversion
+                - feature*
 
 jobs:
   compile:
     docker:
-      - image: joepexmg/livery-docker-primary:0.0.7
+      - image: joepexmg/livery-docker-primary:0.0.8
         auth:
           username: joepexmg
           password: $DOCKERHUB_PASSWORD_JOEPEXMG
@@ -23,7 +24,7 @@ jobs:
       - run:
           name: configure
           command: |
-            ./configure  \
+            PKG_CONFIG_PATH="/usr/local/lib/x86_64-linux-gnu/pkgconfig/:/usr/local/lib/pkgconfig/:/usr/lib/pkgconfig/" ./configure  \
               --enable-gpl \
               --enable-nonfree \
               --enable-openssl \
@@ -47,7 +48,8 @@ jobs:
               --enable-libsrt \
               --extra-libs="-lpthread -lm" \
               --pkg-config-flags=--static \
-              --prefix="output"
+              --prefix="output" \
+              --ld=g++ 
       - run:
           name: make
           command: |
