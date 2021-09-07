@@ -394,10 +394,11 @@ static void *thr_io_write(void *arg) {
     return NULL;
 }
 
-static free_idle_connections(int count, int limit) {
+static void free_idle_connections(int count, int limit) {
     connection *conn_l = connections;
-    connection *next = conn_l->next;
+    connection *next;
     while (conn_l && count > limit) {
+        next = conn_l->next;
         if (!conn_l->claimed) {
             remove_conn(conn_l);
             count--;
