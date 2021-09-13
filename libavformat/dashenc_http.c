@@ -496,12 +496,13 @@ static connection *claim_connection(char *url, int need_new_connection) {
     av_strlcpy(conn->url, url, len);
     conn->claimed = 1;
     conn->nr = conn_nr;
-    pthread_mutex_unlock(&connections_mutex);
 
     if(conn_idle_count > 15){
         free_idle_connections(conn_idle_count, 15);
     }
 
+    pthread_mutex_unlock(&connections_mutex);
+    
     return conn;
 }
 
