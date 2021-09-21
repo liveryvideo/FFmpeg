@@ -394,6 +394,19 @@ static void *thr_io_write(void *arg) {
     return NULL;
 }
 
+static void free_idle_connections(int count, int limit) {
+    connection *conn_l = connections;
+    connection *next;
+    while (conn_l && count > limit) {
+        next = conn_l->next;
+        if (!conn_l->claimed) {
+            remove_conn(conn_l);
+            count--;
+        }
+        conn_l = next;
+    }
+}
+
 /**
  * Claims a free connection and returns it.
  * Released connections are used first.
@@ -405,6 +418,7 @@ static connection *claim_connection(char *url, int need_new_connection) {
     }
     int64_t lowest_release_time = av_gettime() / 1000;
     int conn_nr = -1;
+    int conn_idle_count = 0;
     pthread_mutex_lock(&connections_mutex);
 
     connection *conn = NULL;
@@ -418,6 +432,7 @@ static connection *claim_connection(char *url, int need_new_connection) {
                 conn = conn_l;
                 lowest_release_time = conn->release_time;
             }
+            conn_idle_count++;
         }
         conn_l = conn_l->next;
     }
@@ -481,7 +496,13 @@ static connection *claim_connection(char *url, int need_new_connection) {
     av_strlcpy(conn->url, url, len);
     conn->claimed = 1;
     conn->nr = conn_nr;
+
+    if(conn_idle_count > 15){
+        free_idle_connections(conn_idle_count, 15);
+    }
+
     pthread_mutex_unlock(&connections_mutex);
+    
     return conn;
 }
 
