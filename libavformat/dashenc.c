@@ -198,7 +198,8 @@ typedef struct DASHContext {
     int finish_stream;
     int new_seg_on_keyframe;
     int first_mpd_written; /* used to log some details the first time the mpd is written */
-    stats *time_stats;
+    stats *audio_time_stats;
+    stats *video_time_stats;
     int64_t suggested_presentation_delay;
 
     int frag_type;
@@ -691,7 +692,8 @@ static void dash_free(AVFormatContext *s)
         av_freep(&os->media_seg_name);
         free_time_stats(os->bitrate_stats);
     }
-    free_time_stats(c->time_stats);
+    free_time_stats(c->audio_time_stats);
+    free_time_stats(c->video_time_stats);
     av_freep(&c->streams);
 
     //ff_format_io_close(s, &c->mpd_out);
@@ -1826,7 +1828,8 @@ static int dash_init(AVFormatContext *s)
     c->nr_of_streams_flushed = 0;
     c->target_latency_refid = -1;
 
-    c->time_stats = init_time_stats("Processing time (ms)", 5 * 1000000);
+    c->audio_time_stats = init_time_stats("Audio processing time (ms)", 5 * 1000000);
+    c->video_time_stats = init_time_stats("Video processing time (ms)", 5 * 1000000);
 
     return 0;
 }
@@ -2191,7 +2194,12 @@ static void print_stats(DASHContext *c, OutputStream *os, AVPacket *pkt)
         curr_time = av_gettime_relative();
         pTime = (curr_time - pkt_init_time) / 1000;
 
-        print_time_stats(c->time_stats, pTime);
+        if (os->ctx->streams[0]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            print_time_stats(c->video_time_stats, pTime);
+        } else {
+            print_time_stats(c->audio_time_stats, pTime);
+        }
+
     } else {
         av_log(c, AV_LOG_INFO, "missing packet time ret: %"PRId64", codec: %s\n", pkt_init_time, os->codec_str);
     }
