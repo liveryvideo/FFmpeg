@@ -15,9 +15,9 @@ typedef struct stats {
     pthread_mutex_t stats_lock;
 } stats;
 
-void print_time_stats(stats *stats, int64_t value);
+void print_complete_stats(stats *stats, int64_t value);
 void print_total_stats(stats *stats, int64_t value);
-stats *init_time_stats(const char *name, int logInterval);
-void free_time_stats(stats *stats);
+stats *init_stats(const char *name, int logInterval);
+void free_stats(stats *stats);
 
 #endif /* AVFORMAT_DASH_STATS_H */

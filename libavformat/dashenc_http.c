@@ -146,8 +146,8 @@ static void write_chunk(connection *conn, int chunk_nr) {
         av_log(NULL, AV_LOG_WARNING, "It took %"PRId64"(ms) to flush chunk %d. conn_nr: %d\n", flush_time_ms, chunk_nr, conn->nr);
     }
 
-    print_time_stats(chunk_write_time_stats, av_gettime() / 1000 - start_time_ms);
-    print_time_stats(conn_count_stats, nr_of_connections);
+    print_complete_stats(chunk_write_time_stats, av_gettime() / 1000 - start_time_ms);
+    print_complete_stats(conn_count_stats, nr_of_connections);
 }
 
 static connection *get_conn(int conn_nr) {
@@ -502,7 +502,7 @@ static connection *claim_connection(char *url, int need_new_connection) {
     }
 
     pthread_mutex_unlock(&connections_mutex);
-    
+
     return conn;
 }
 
@@ -746,6 +746,6 @@ void pool_get_context(AVIOContext **out, int conn_nr) {
 }
 
 void pool_init() {
-    chunk_write_time_stats = init_time_stats("Chunk write time (ms)", 5 * 1000000);
-    conn_count_stats = init_time_stats("Nr of connections:", 5 * 1000000);
+    chunk_write_time_stats = init_stats("chunk_write_time", 5 * 1000000);
+    conn_count_stats = init_stats("nr_of_connections", 5 * 1000000);
 }

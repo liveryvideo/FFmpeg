@@ -690,10 +690,10 @@ static void dash_free(AVFormatContext *s)
         av_freep(&os->single_file_name);
         av_freep(&os->init_seg_name);
         av_freep(&os->media_seg_name);
-        free_time_stats(os->bitrate_stats);
+        free_stats(os->bitrate_stats);
     }
-    free_time_stats(c->audio_time_stats);
-    free_time_stats(c->video_time_stats);
+    free_stats(c->audio_time_stats);
+    free_stats(c->video_time_stats);
     av_freep(&c->streams);
 
     //ff_format_io_close(s, &c->mpd_out);
@@ -1597,7 +1597,7 @@ static int dash_init(AVFormatContext *s)
         }
 
         snprintf(bitrate_str, 100, "bitrate_stats: rep_%d_bitrate_%d, value", i, os->bit_rate);
-        os->bitrate_stats = init_time_stats(bitrate_str, 1 * 1000000);
+        os->bitrate_stats = init_stats(bitrate_str, 1 * 1000000);
         os->conn_nr = -1;
 
         // copy AdaptationSet language and role from stream metadata
@@ -1828,8 +1828,8 @@ static int dash_init(AVFormatContext *s)
     c->nr_of_streams_flushed = 0;
     c->target_latency_refid = -1;
 
-    c->audio_time_stats = init_time_stats("Audio processing time (ms)", 5 * 1000000);
-    c->video_time_stats = init_time_stats("Video processing time (ms)", 5 * 1000000);
+    c->audio_time_stats = init_stats("audio_processing", 5 * 1000000);
+    c->video_time_stats = init_stats("video_processing", 5 * 1000000);
 
     return 0;
 }
@@ -2195,9 +2195,9 @@ static void print_stats(DASHContext *c, OutputStream *os, AVPacket *pkt)
         pTime = (curr_time - pkt_init_time) / 1000;
 
         if (os->ctx->streams[0]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            print_time_stats(c->video_time_stats, pTime);
+            print_complete_stats(c->video_time_stats, pTime);
         } else {
-            print_time_stats(c->audio_time_stats, pTime);
+            print_complete_stats(c->audio_time_stats, pTime);
         }
 
     } else {

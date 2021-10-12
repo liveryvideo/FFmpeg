@@ -9,7 +9,7 @@
 /**
  * Call his method with a value and it will print the min, max and average value once every logInterval.
  */
-void print_time_stats(stats *stats, int64_t value)
+void print_complete_stats(stats *stats, int64_t value)
 {
     int64_t avgValue;
     int64_t curr_time = av_gettime_relative();
@@ -34,7 +34,7 @@ void print_time_stats(stats *stats, int64_t value)
         stats->lastLog = curr_time;
         avgValue = stats->totalValue / stats->nrOfSamples;
 
-        av_log(NULL, AV_LOG_INFO, "%s min: %"PRId64", max: %"PRId64", avg: %"PRId64", time: %"PRId64"\n",
+        av_log(NULL, AV_LOG_INFO, "complete_stats name: %s, min: %"PRId64", max: %"PRId64", avg: %"PRId64", time: %"PRId64"\n",
             stats->name,
             stats->minValue,
             stats->maxValue,
@@ -79,7 +79,7 @@ void print_total_stats(stats *stats, int64_t value)
     pthread_mutex_unlock(&stats->stats_lock);
 }
 
-stats *init_time_stats(const char *name, int logInterval)
+stats *init_stats(const char *name, int logInterval)
 {
     stats *stats = calloc(1, sizeof(struct stats));
     stats->logInterval = logInterval;
@@ -88,7 +88,7 @@ stats *init_time_stats(const char *name, int logInterval)
     return stats;
 }
 
-void free_time_stats(stats *stats)
+void free_stats(stats *stats)
 {
     pthread_mutex_destroy(&stats->stats_lock);
     free(stats);
