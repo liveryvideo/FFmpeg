@@ -166,6 +166,7 @@ typedef struct DASHContext {
     int64_t last_duration;
     int64_t total_duration;
     char availability_start_time[100];
+    int64_t availability_start_time_us;
     time_t start_time_s;
     int64_t presentation_time_offset;
     char dirname[1024];
@@ -200,6 +201,7 @@ typedef struct DASHContext {
     int first_mpd_written; /* used to log some details the first time the mpd is written */
     stats *audio_time_stats;
     stats *video_time_stats;
+    stats *seg_start_deviation_stats;
     int64_t suggested_presentation_delay;
 
     int frag_type;
@@ -694,6 +696,7 @@ static void dash_free(AVFormatContext *s)
     }
     free_stats(c->audio_time_stats);
     free_stats(c->video_time_stats);
+    free_stats(c->seg_start_deviation_stats);
     av_freep(&c->streams);
 
     //ff_format_io_close(s, &c->mpd_out);
@@ -1830,6 +1833,7 @@ static int dash_init(AVFormatContext *s)
 
     c->audio_time_stats = init_stats("audio_processing", 5 * 1000000);
     c->video_time_stats = init_stats("video_processing", 5 * 1000000);
+    c->seg_start_deviation_stats = init_stats("seg_start_deviation", 5 * 1000000);
 
     return 0;
 }
@@ -2103,6 +2107,13 @@ static int dash_flush(AVFormatContext *s, int final, int stream)
         av_log(s, AV_LOG_VERBOSE, "Representation %d media segment %d written to: %s\n", i, os->segment_index, os->full_path);
 
         os->pos += range_length;
+
+        //Calculate segment write start time deviation
+        //curr_time - availability_start_time + written_segment_times
+        int64_t curr_time = av_gettime();
+        int64_t deviation = (curr_time - (c->availability_start_time_us + (os->segment_index - 1) * duration)) / 1000;
+
+        print_complete_stats(c->seg_start_deviation_stats, deviation);
     }
 
     if (c->window_size) {
@@ -2283,22 +2294,21 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
         char orig_availability_start_time[100];
         int64_t rel_init_time;
         int64_t curr_time = av_gettime();
-        int64_t init_start_time;
         c->start_time_s = curr_time / 1000000;
 
         av_log(s, AV_LOG_INFO, "----------------------------------------\n");
         rel_init_time = get_init_time(pkt);
         if (rel_init_time <= 0) {
             av_log(s, AV_LOG_INFO, "Init time of pkt = 0, codec: %s. So skip optimising availabilityStartTime.\n", os->codec_str);
-            init_start_time = curr_time;
+            c->availability_start_time_us = curr_time;
         } else {
             int64_t rel_time = av_gettime_relative();
-            init_start_time = curr_time - (rel_time - rel_init_time);
+            c->availability_start_time_us = curr_time - (rel_time - rel_init_time);
         }
 
         format_date(c->availability_start_time,
                     sizeof(c->availability_start_time),
-                    init_start_time);
+                    c->availability_start_time_us);
 
         format_date_now(orig_availability_start_time,
                         sizeof(orig_availability_start_time));
