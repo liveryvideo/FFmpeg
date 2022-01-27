@@ -12,6 +12,13 @@
 #include "http.h"
 #endif
 
+typedef struct buffer_data {
+    uint8_t *buf;
+    size_t size;   /* Current size of the buffer */
+    uint8_t *ptr;
+    size_t room;   /* Size left in the buffer */
+} buffer_data;
+
 typedef struct chunk {
     unsigned char *buf;
     int size;
@@ -45,6 +52,7 @@ typedef struct connection {
     int nr_of_chunks;       /* Nr of chunks available, guarded by chunks_mutex */
     int chunks_done;        /* Are all chunks for this request available in the buffer */
     int last_chunk_written; /* Last chunk number that has been written */
+    buffer_data *mem;       /* Optional buffer to hold file content that will be written */
 } connection;
 
 static connection *connections = NULL;  /* an array with pointers to connections */
@@ -412,18 +420,19 @@ static void free_idle_connections(int count, int limit) {
  * Released connections are used first.
  */
 static connection *claim_connection(char *url, int need_new_connection) {
-    if (url == NULL) {
-        av_log(NULL, AV_LOG_DEBUG, "Claimed conn_id: -1, url: NULL\n");
-        return NULL;
-    }
     int64_t lowest_release_time = av_gettime() / 1000;
     int conn_nr = -1;
     int conn_idle_count = 0;
-    pthread_mutex_lock(&connections_mutex);
-
     connection *conn = NULL;
     connection *conn_l = connections;
     size_t len;
+
+    if (url == NULL) {
+        av_log(NULL, AV_LOG_INFO, "Claimed conn_id: -1, url: NULL\n");
+        return NULL;
+    }
+
+    pthread_mutex_lock(&connections_mutex);
 
     while (conn_l) {
         if (!conn_l->claimed) {
@@ -449,6 +458,7 @@ static connection *claim_connection(char *url, int need_new_connection) {
         conn->last_chunk_written = 0;
         conn->nr_of_chunks = 0;
         conn->nr = conn_nr;
+        conn->mem = NULL;
         nr_of_connections++;
         total_nr_of_connections++;
         pthread_mutex_init(&conn->chunks_mutex, NULL);
@@ -616,7 +626,7 @@ void pool_io_close(AVFormatContext *s, char *filename, int conn_nr) {
     }
 
     conn = get_conn(conn_nr);
-    av_log(NULL, AV_LOG_DEBUG, "pool_io_close conn_nr: %d, nr_of_chunks: %d\n", conn_nr, conn->nr_of_chunks);
+    av_log(NULL, AV_LOG_INFO, "pool_io_close conn_nr: %d, nr_of_chunks: %d\n", conn_nr, conn->nr_of_chunks);
 
     if (!conn->opened && !conn->opened_error) {
         av_log(s, AV_LOG_INFO, "Skip closing HTTP request because connection is not opened. conn_nr: %d, filename: %s\n", conn_nr, filename);
@@ -690,6 +700,23 @@ void pool_free_all(AVFormatContext *s) {
     }
 }
 
+
+void pool_write_flush_mem(int conn_nr) {
+    connection *conn;
+    int read_size;
+
+    if (conn_nr < 0) {
+        av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr in pool_write_flush_mem. conn_nr: %d\n", conn_nr);
+        return;
+    }
+
+    conn = get_conn(conn_nr);
+
+    read_size = conn->mem->ptr - conn->mem->buf;
+
+    pool_write_flush(conn->mem->buf, read_size, conn_nr);
+}
+
 void pool_write_flush(const unsigned char *buf, int size, int conn_nr) {
     connection *conn;
     chunk *chunk_ptr;
@@ -730,19 +757,75 @@ void pool_write_flush(const unsigned char *buf, int size, int conn_nr) {
     pthread_mutex_unlock(&conn->chunks_mutex);
 }
 
+static int write_packet(void *opaque, uint8_t *buf, int buf_size) {
+    struct buffer_data *bd = (struct buffer_data *)opaque;
+    while (buf_size > bd->room) {
+        int64_t offset = bd->ptr - bd->buf;
+        bd->buf = av_realloc_f(bd->buf, 2, bd->size);
+        if (!bd->buf)
+            return AVERROR(ENOMEM);
+        bd->size *= 2;
+        bd->ptr = bd->buf + offset;
+        bd->room = bd->size - offset;
+    }
+
+    memcpy(bd->ptr, buf, buf_size);
+    bd->ptr  += buf_size;
+    bd->room -= buf_size;
+
+    return buf_size;
+}
+
 /**
- * Set out to the AVIOContext of the given conn_nr
+ * Create AVIOContext for memory writing (instead of directly writing to the output)
+ * Can be used with pool_write_flush_mem
+ * Should be freed with pool_free_mem_context()
  */
-void pool_get_context(AVIOContext **out, int conn_nr) {
-    //TODO we probably don't want to expose the AVIOContext
+AVIOContext *pool_create_mem_context(int conn_nr) {
     connection *conn;
+    unsigned char *avio_ctx_buffer;
+    const size_t bd_buf_size = 10;
+    size_t avio_ctx_buffer_size = 20;
 
     if (conn_nr < 0) {
-        av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr in pool_get_context. conn_nr: %d\n", conn_nr);
+        av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr in pool_create_mem_context. conn_nr: %d\n", conn_nr);
+        return NULL;
+    }
+    conn = get_conn(conn_nr);
+
+    conn->mem = av_malloc(sizeof(buffer_data));
+    conn->mem->room = 0;
+    conn->mem->size = 0;
+    conn->mem->ptr = conn->mem->buf = av_malloc(bd_buf_size);
+    if (!conn->mem->buf) {
+        av_log(NULL, AV_LOG_WARNING, "Could not allocate memory bd_buf_size. conn_nr: %d\n", conn_nr);
+        return NULL;
+    }
+    conn->mem->size = conn->mem->room = bd_buf_size;
+    avio_ctx_buffer = av_malloc(avio_ctx_buffer_size);
+    if (!avio_ctx_buffer) {
+        av_log(NULL, AV_LOG_WARNING, "Could not allocate memory avio_ctx_buffer_size. conn_nr: %d\n", conn_nr);
+        return NULL;
+    }
+    
+    return avio_alloc_context(avio_ctx_buffer, avio_ctx_buffer_size, 1, conn->mem, NULL, write_packet, NULL);
+}
+
+void pool_free_mem_context(AVIOContext **out, int conn_nr) {
+     connection *conn;
+
+    if (conn_nr < 0) {
+        av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr in pool_free_mem_context. conn_nr: %d\n", conn_nr);
         return;
     }
     conn = get_conn(conn_nr);
-    *out = conn->out;
+
+    if (conn->mem != NULL) {
+        avio_context_free(out);
+        av_free(conn->mem->buf);
+        av_free(conn->mem);
+        conn->mem = NULL;
+    }
 }
 
 void pool_init() {

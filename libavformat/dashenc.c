@@ -589,7 +589,7 @@ static void write_hls_media_playlist(OutputStream *os, AVFormatContext *s,
             target_duration = lrint(duration);
     }
 
-    pool_get_context(&out, conn_nr);
+    out = pool_create_mem_context(conn_nr);
 
     ff_hls_write_playlist_header(out, 6, -1, target_duration,
                                  start_number, PLAYLIST_TYPE_NONE, 0);
@@ -624,8 +624,13 @@ static void write_hls_media_playlist(OutputStream *os, AVFormatContext *s,
     if (final)
         ff_hls_write_end_list(out);
 
+    avio_flush(out);
+    pool_write_flush_mem(conn_nr);
+
     //dashenc_io_close(s, &c->m3u8_out, temp_filename_hls);
     pool_io_close(s, temp_filename_hls, conn_nr);
+
+    pool_free_mem_context(&out, conn_nr);
 
     if (use_rename)
         ff_rename(temp_filename_hls, filename_hls, os->ctx);
@@ -1248,8 +1253,8 @@ static int write_manifest(AVFormatContext *s, int final)
         av_log(s, AV_LOG_INFO, "availabilityStartTime=\"%s\"\n", c->availability_start_time);
     }
 
-    pool_get_context(&out, mpd_conn_nr);
-
+    out = pool_create_mem_context(mpd_conn_nr);
+   
     avio_printf(out, "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
     //LLS-1614 removed type=static because we don't want players to playback a recording of the stream yet.
     avio_printf(out, "<MPD xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n"
@@ -1346,8 +1351,11 @@ static int write_manifest(AVFormatContext *s, int final)
 
     avio_printf(out, "</MPD>\n");
     avio_flush(out);
+
+    pool_write_flush_mem(mpd_conn_nr);
     //dashenc_io_close(s, &c->mpd_out, temp_filename);
     pool_io_close(s, temp_filename, mpd_conn_nr);
+    pool_free_mem_context(&out, mpd_conn_nr);
 
     if (use_rename) {
         if ((ret = ff_rename(temp_filename, s->url, s)) < 0)
@@ -1383,7 +1391,7 @@ static int write_manifest(AVFormatContext *s, int final)
             return handle_io_open_error(s, m3u8_conn_nr, temp_filename);
         }
 
-        pool_get_context(&m3u8_out, m3u8_conn_nr);
+        m3u8_out = pool_create_mem_context(m3u8_conn_nr);
         ff_hls_write_playlist_version(m3u8_out, 7);
 
         for (i = 0; i < s->nb_streams; i++) {
@@ -1443,8 +1451,12 @@ static int write_manifest(AVFormatContext *s, int final)
                                      playlist_file, agroup,
                                      codec_str_ptr, NULL, NULL);
         }
+
+        avio_flush(m3u8_out);
+        pool_write_flush_mem(m3u8_conn_nr);
         //dashenc_io_close(s, &m3u8_out, temp_filename);
         pool_io_close(s, temp_filename, m3u8_conn_nr);
+        pool_free_mem_context(&m3u8_out, m3u8_conn_nr);
         if (use_rename)
             if ((ret = ff_rename(temp_filename, filename_hls, s)) < 0)
                 return ret;
@@ -2520,10 +2532,9 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
         len = avio_get_dyn_buf (os->ctx->pb, &buf);
 
         if (os->conn_nr >= 0) {
-            //TODO: does this block?
             pool_write_flush(buf + os->written_len, len - os->written_len, os->conn_nr);
         } else {
-            av_log(s, AV_LOG_INFO, "Skip writing chunk because connection is not available.\n");
+            av_log(s, AV_LOG_INFO, "Skip writing chunk because connection is not available. name: %s\n", os->temp_path);
         }
 
         os->written_len = len;
