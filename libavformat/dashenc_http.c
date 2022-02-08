@@ -1,3 +1,12 @@
+/*
+ * Manages connections and HTTP requests.
+ *
+ * Things to keep in mind.
+ * s->io_open in this file will open the TCP connection and start the HTTP request.
+ * There is some code in here that is also considering file based output, this is currently not used in production.
+ * 
+ */
+
 #include "dashenc_http.h"
 
 #include "config.h"
@@ -25,6 +34,12 @@ typedef struct chunk {
     int nr;
 } chunk;
 
+/**
+ *  Connection currently has too may responsibilities:
+ *  - Represents a virtual connection to dashenc
+ *  - Contains the actual TCP connection that can be closed and re-opened
+ *  - Contains the request state and holds a buffer of chunks for that request
+ */
 typedef struct connection {
     int nr;                  /* Number of the connection, used to lookup this connection in the connections list */
     AVIOContext *out;        /* The TCP connection */
@@ -42,6 +57,7 @@ typedef struct connection {
     pthread_cond_t chunks_mutex_cv;
 
     //Request specific data
+    int req_opened;         /* If 1 the request is opened and more data can be written to it, only accessed from w_thread */
     int must_succeed;       /* If 1 the request must succeed, otherwise we'll crash the program */
     int retry;              /* If 1 the request can be retried */
     int retry_nr;           /* Current retry number, used to limit the nr of retries */
@@ -51,6 +67,7 @@ typedef struct connection {
     chunk **chunks_ptr;     /* An array with pointers to chunks */
     int nr_of_chunks;       /* Nr of chunks available, guarded by chunks_mutex */
     int chunks_done;        /* Are all chunks for this request available in the buffer */
+    int cleanup_requested;  /* This conn should be deleted, can be caused by too many idle connections */
     int last_chunk_written; /* Last chunk number that has been written */
     buffer_data *mem;       /* Optional buffer to hold file content that will be written */
 } connection;
@@ -64,7 +81,7 @@ static stats *chunk_write_time_stats;
 static stats *conn_count_stats;
 
 static int should_stop_var;
-static pthread_mutex_t stop_mutex = PTHREAD_MUTEX_INITIALIZER;;
+static pthread_mutex_t stop_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 //defined here because it has a circular dependency with retry()
 static void *thr_io_close(connection *conn);
@@ -178,12 +195,19 @@ static connection *get_conn(int conn_nr) {
     abort();
 }
 
+// Open connection if not open and start doing the request
 static int io_open_for_retry(connection *conn) {
     URLContext *http_url_context;
     int ret;
     AVFormatContext *s = conn->s;
+    int conn_opened;
 
-    if (!conn->opened) {
+    pthread_mutex_lock(&connections_mutex);
+    conn_opened = conn->opened;
+    pthread_mutex_unlock(&connections_mutex);
+
+    //TODO: this is not safe, we need a mutex per connection and block while opening the connection
+    if (!conn_opened) {
         av_log(s, AV_LOG_INFO, "Connection for retry: %d not yet open. conn_nr: %d, url: %s\n", conn->retry_nr, conn->nr, conn->url);
 
         ret = s->io_open(s, &(conn->out), conn->url, AVIO_FLAG_WRITE, &conn->options);
@@ -292,11 +316,12 @@ static void remove_from_list(connection *conn) {
 /**
  * Remove a connection from the list and free it's memory.
  * This method expects the connections_mutex to be active.
+ * It also expects to be started from the connection thread.
  */
 static void remove_conn(connection *conn) {
     remove_from_list(conn);
 
-    av_log(NULL, AV_LOG_INFO, "remove_conn tail: %d\n", connections_tail->nr);
+    av_log(NULL, AV_LOG_INFO, "remove_conn. Current tail: %d\n", connections_tail->nr);
     pthread_mutex_destroy(&conn->chunks_mutex);
     pthread_cond_destroy(&conn->chunks_mutex_cv);
     nr_of_connections--;
@@ -312,7 +337,7 @@ static void *thr_io_close(connection *conn) {
     int ret;
     int response_code;
 
-    av_log(NULL, AV_LOG_DEBUG, "thr_io_close conn_nr: %d, out_addr: %p \n", conn->nr, conn->out);
+    av_log(NULL, AV_LOG_INFO, "thr_io_close conn_nr: %d, out_addr: %p \n", conn->nr, conn->out);
 
     if (conn->opened_error) {
         ret = -1;
@@ -346,11 +371,13 @@ static void *thr_io_close(connection *conn) {
 
     pthread_mutex_lock(&connections_mutex);
     release_request(conn);
-    if (conn->opened == 0 || should_stop()) {
+    if (should_stop()) {
         remove_conn(conn);
-        //The thread will be stopped at this point
+        //The thread will be stopped at this point and connections_mutex released by remove_conn
     }
     pthread_mutex_unlock(&connections_mutex);
+
+    conn->req_opened = 0;
 
     return NULL;
 }
@@ -363,6 +390,63 @@ static int chunk_available(connection *conn) {
     pthread_mutex_unlock(&conn->chunks_mutex);
 
     return ret;
+}
+
+/**
+ * Opens the TCP connection if it's not open.
+ * Opens the request if it's not open.
+ * 
+ */
+static int open_request_if_needed(connection *conn) {
+    int ret;
+    URLContext *http_url_context;
+
+    if (conn->req_opened) {
+        return conn->nr;
+    }
+
+    if (!conn->opened) {
+        av_log(conn->s, AV_LOG_INFO, "Connection(%d) not yet open, opening and starting req %s\n", conn->nr, conn->url);
+        ret = conn->s->io_open(conn->s, &(conn->out), conn->url, AVIO_FLAG_WRITE, &conn->options);
+        if (ret < 0) {
+            av_log(conn->s, AV_LOG_WARNING, "Could not open %s\n", conn->url);
+            abort_if_needed(conn->must_succeed);
+            conn->opened_error = 1;
+            if (!conn->retry) {
+                return ret;
+            }
+            return conn->nr;
+        }
+
+        conn->req_opened = 1;
+
+        pthread_mutex_lock(&connections_mutex);
+        conn->opened = 1;
+        pthread_mutex_unlock(&connections_mutex);
+        return conn->nr;
+    }
+
+    http_url_context = ffio_geturlcontext(conn->out);
+    av_assert0(http_url_context);
+
+    av_log(conn->s, AV_LOG_INFO, "Connection(%d) start req on existing connection %s\n", conn->nr, conn->url);
+
+    ret = ff_http_do_new_request(http_url_context, conn->url);
+    if (ret != 0) {
+        int64_t curr_time_ms = av_gettime() / 1000;
+        int64_t idle_tims_ms = curr_time_ms - conn->release_time;
+        av_log(conn->s, AV_LOG_WARNING, "pool_io_open error conn_nr: %d, idle_time: %"PRId64", error: %d, name: %s\n", conn->nr, idle_tims_ms, ret, conn->url);
+        ff_format_io_close(conn->s, &conn->out);
+        abort_if_needed(conn->must_succeed);
+        conn->opened_error = 1;
+        if (!conn->retry) {
+            return ret;
+        }
+        return conn->nr;
+    }
+
+    conn->req_opened = 1;
+    return conn->nr;
 }
 
 /**
@@ -383,6 +467,14 @@ static void *thr_io_write(void *arg) {
 
         pthread_mutex_unlock(&conn->chunks_mutex);
 
+        if (conn->cleanup_requested) {
+            pthread_mutex_lock(&connections_mutex);
+            remove_conn(conn);
+            //The thread will be stopped at this point and connections_mutex released by remove_conn
+        }
+
+        open_request_if_needed(conn);
+
         while (chunk_available(conn)) {
             write_chunk(conn, conn->last_chunk_written);
 
@@ -402,14 +494,25 @@ static void *thr_io_write(void *arg) {
     return NULL;
 }
 
-static void free_idle_connections(int count, int limit) {
+/**
+ * Trigger deletion of idle connections.
+ * Expects connections_mutex to be locked.
+ */
+static void free_idle_connections(int nr_of_idle_connections, int nr_of_connections_to_keep) {
     connection *conn_l = connections;
     connection *next;
-    while (conn_l && count > limit) {
+
+    av_log(NULL, AV_LOG_INFO, "free_idle_connections, nr_of_idle_connections: %d, nr_of_connections_to_keep: %d\n", nr_of_idle_connections, nr_of_connections_to_keep);
+
+    while (conn_l && (nr_of_idle_connections > nr_of_connections_to_keep)) {
         next = conn_l->next;
         if (!conn_l->claimed) {
-            remove_conn(conn_l);
-            count--;
+            //signal connection thread
+            conn_l->cleanup_requested = 1;
+            pthread_mutex_lock(&conn_l->chunks_mutex);
+            pthread_cond_signal(&conn_l->chunks_mutex_cv);
+            pthread_mutex_unlock(&conn_l->chunks_mutex);
+            nr_of_idle_connections--;
         }
         conn_l = next;
     }
@@ -435,7 +538,7 @@ static connection *claim_connection(char *url, int need_new_connection) {
     pthread_mutex_lock(&connections_mutex);
 
     while (conn_l) {
-        if (!conn_l->claimed) {
+        if (!conn_l->claimed && !conn_l->cleanup_requested) {
             if ((conn_nr == -1) || (conn->release_time != 0 && conn_l->release_time < lowest_release_time)) {
                 conn_nr = conn_l->nr;
                 conn = conn_l;
@@ -459,6 +562,8 @@ static connection *claim_connection(char *url, int need_new_connection) {
         conn->nr_of_chunks = 0;
         conn->nr = conn_nr;
         conn->mem = NULL;
+        conn->req_opened = 0;
+        conn->cleanup_requested = 0;
         nr_of_connections++;
         total_nr_of_connections++;
         pthread_mutex_init(&conn->chunks_mutex, NULL);
@@ -493,7 +598,7 @@ static connection *claim_connection(char *url, int need_new_connection) {
             connections_tail = conn;
         }
 
-        av_log(NULL, AV_LOG_INFO, "No free connections so added one. Url: %s, tail: %d\n", url, connections_tail->nr);
+        av_log(NULL, AV_LOG_INFO, "No free connections so added one. Url: %s, conn_nr: %d, tail: %d\n", url, conn_nr, connections_tail->nr);
     }
 
     if (need_new_connection && conn->opened) {
@@ -518,18 +623,24 @@ static connection *claim_connection(char *url, int need_new_connection) {
 
 /**
  * Opens a request on a free connection and returns the connection number
+ * Only used for non persistent HTTP connections or file based output
  */
 static int open_request(AVFormatContext *s, char *url, AVDictionary **options) {
     int ret;
     connection *conn = claim_connection(url, 0);
 
-    if (conn->opened)
+    pthread_mutex_lock(&connections_mutex);
+    if (conn->opened) {
         av_log(s, AV_LOG_WARNING, "open_request while connection might be open. This is TODO for when not using persistent connections. conn_nr: %d\n", conn->nr);
+    }
+    pthread_mutex_unlock(&connections_mutex);
 
     ret = s->io_open(s, &conn->out, url, AVIO_FLAG_WRITE, options);
     if (ret >= 0) {
         ret = conn->nr;
+        pthread_mutex_lock(&connections_mutex);
         conn->opened = 1;
+        pthread_mutex_unlock(&connections_mutex);
     }
 
     return ret;
@@ -552,7 +663,6 @@ int pool_io_open(AVFormatContext *s, char *filename,
         av_log(s, AV_LOG_WARNING, "Non HTTP request %s\n", filename);
 #if CONFIG_HTTP_PROTOCOL
     } else {
-        URLContext *http_url_context;
         AVDictionary *d = NULL;
 
         //claim new item from pool and open connection if needed
@@ -572,41 +682,6 @@ int pool_io_open(AVFormatContext *s, char *filename,
         }
 
         conn->http_persistent = http_persistent;
-        if (!conn->opened) {
-            av_log(s, AV_LOG_INFO, "Connection(%d) not yet open %s\n", conn->nr, filename);
-            ret = s->io_open(s, &(conn->out), filename, AVIO_FLAG_WRITE, options);
-            if (ret < 0) {
-                av_log(s, AV_LOG_WARNING, "Could not open %s\n", filename);
-                abort_if_needed(must_succeed);
-                conn->opened_error = 1;
-                if (!conn->retry) {
-                    return ret;
-                }
-                return conn->nr;
-            }
-
-            pthread_mutex_lock(&connections_mutex);
-            conn->opened = 1;
-            pthread_mutex_unlock(&connections_mutex);
-            return conn->nr;
-        }
-
-        http_url_context = ffio_geturlcontext(conn->out);
-        av_assert0(http_url_context);
-
-        ret = ff_http_do_new_request(http_url_context, filename);
-        if (ret != 0) {
-            int64_t curr_time_ms = av_gettime() / 1000;
-            int64_t idle_tims_ms = curr_time_ms - conn->release_time;
-            av_log(s, AV_LOG_WARNING, "pool_io_open error conn_nr: %d, idle_time: %"PRId64", error: %d, name: %s\n", conn->nr, idle_tims_ms, ret, filename);
-            ff_format_io_close(s, &conn->out);
-            abort_if_needed(must_succeed);
-            conn->opened_error = 1;
-            if (!conn->retry) {
-                return ret;
-            }
-            return conn->nr;
-        }
         ret = conn->nr;
 #endif
     }
@@ -627,12 +702,6 @@ void pool_io_close(AVFormatContext *s, char *filename, int conn_nr) {
 
     conn = get_conn(conn_nr);
     av_log(NULL, AV_LOG_INFO, "pool_io_close conn_nr: %d, nr_of_chunks: %d\n", conn_nr, conn->nr_of_chunks);
-
-    if (!conn->opened && !conn->opened_error) {
-        av_log(s, AV_LOG_INFO, "Skip closing HTTP request because connection is not opened. conn_nr: %d, filename: %s\n", conn_nr, filename);
-        abort_if_needed(conn->must_succeed);
-        return;
-    }
 
     conn->chunks_done = 1;
 
@@ -688,8 +757,6 @@ void pool_free_all(AVFormatContext *s) {
         usleep(10000);
     }
 
-//        pool_io_close(s, "fake", conn->nr);
-
     av_log(NULL, AV_LOG_INFO, "pool_free_all free memory\n");
     while (conn) {
         //close conn->out
@@ -728,11 +795,6 @@ void pool_write_flush(const unsigned char *buf, int size, int conn_nr) {
 
     conn = get_conn(conn_nr);
 
-    if (!conn->opened && !conn->opened_error) {
-        av_log(NULL, AV_LOG_WARNING, "connection closed in pool_write_flush. conn_nr: %d, url: %s\n", conn_nr, conn->url);
-        return;
-    }
-
     //Save the chunk in memory
     chunk_ptr = malloc(sizeof(chunk));
     chunk_ptr->size = size;
@@ -746,13 +808,6 @@ void pool_write_flush(const unsigned char *buf, int size, int conn_nr) {
 
     pthread_mutex_lock(&conn->chunks_mutex);
     av_dynarray_add(&conn->chunks_ptr, &conn->nr_of_chunks, chunk_ptr);
-    pthread_mutex_unlock(&conn->chunks_mutex);
-
-    if (conn->opened_error) {
-        return;
-    }
-
-    pthread_mutex_lock(&conn->chunks_mutex);
     pthread_cond_signal(&conn->chunks_mutex_cv);
     pthread_mutex_unlock(&conn->chunks_mutex);
 }
