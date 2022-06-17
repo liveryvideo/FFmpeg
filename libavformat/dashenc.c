@@ -2362,6 +2362,8 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
     }
 
 
+    av_log(s, AV_LOG_INFO, "LIV-152 AV_PKT_FLAG_KEY: %d, os->packets_written: %d, elapsed_duration: %ld, st->time_base: %d/%d, seg_end_duration: %ld\n", 
+        pkt->flags & AV_PKT_FLAG_KEY, os->packets_written, elapsed_duration, st->time_base.den, st->time_base.num, seg_end_duration);
     if (pkt->flags & AV_PKT_FLAG_KEY && os->packets_written &&
         av_compare_ts(elapsed_duration, st->time_base,
                       seg_end_duration, AV_TIME_BASE_Q) >= 0) {
