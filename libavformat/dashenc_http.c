@@ -4,17 +4,21 @@
  * Things to keep in mind.
  * s->io_open in this file will open the TCP connection and start the HTTP request.
  * There is some code in here that is also considering file based output, this is currently not used in production.
- * 
+ *
  */
+
+#include <pthread.h>
+#include <unistd.h>
 
 #include "dashenc_http.h"
 
 #include "config.h"
+#include "libavformat/internal.h"
+#include "libavutil/avassert.h"
 #include "libavutil/avutil.h"
-#include <pthread.h>
+#include "libavutil/time.h"
 
 #include "avio_internal.h"
-#include "utils.c"
 #include "dashenc_pool.h"
 #include "dashenc_stats.h"
 #if CONFIG_HTTP_PROTOCOL
@@ -395,7 +399,7 @@ static int chunk_available(connection *conn) {
 /**
  * Opens the TCP connection if it's not open.
  * Opens the request if it's not open.
- * 
+ *
  */
 static int open_request_if_needed(connection *conn) {
     int ret;
@@ -862,7 +866,7 @@ AVIOContext *pool_create_mem_context(int conn_nr) {
         av_log(NULL, AV_LOG_WARNING, "Could not allocate memory avio_ctx_buffer_size. conn_nr: %d\n", conn_nr);
         return NULL;
     }
-    
+
     return avio_alloc_context(avio_ctx_buffer, avio_ctx_buffer_size, 1, conn->mem, NULL, write_packet, NULL);
 }
 

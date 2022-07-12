@@ -22,6 +22,8 @@
 #ifndef AVFORMAT_HTTPAUTH_H
 #define AVFORMAT_HTTPAUTH_H
 
+#include <stdint.h>
+
 /**
  * Authentication types, ordered from weakest to strongest.
  */
@@ -69,6 +71,8 @@ typedef struct HTTPAuthState {
      * Auth ok, but needs to be resent with a new nonce.
      */
     int stale;
+
+    int64_t used_nonce_birth_time;
 } HTTPAuthState;
 
 void ff_http_auth_handle_header(HTTPAuthState *state, const char *key,
