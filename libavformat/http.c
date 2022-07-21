@@ -40,6 +40,8 @@
 #include "os_support.h"
 #include "url.h"
 
+#include <pthread.h>
+
 /* XXX: POST protocol is not completely implemented because ffmpeg uses
  * only a subset of it. */
 
@@ -174,6 +176,11 @@ static const AVOption options[] = {
     { NULL }
 };
 
+static int64_t nonce_birth_time = -1;
+static pthread_mutex_t nonce_birth_time_lock = PTHREAD_MUTEX_INITIALIZER;
+static char current_nonce[300];
+
+static void http_invalidate_auth(HTTPAuthState *s);
 static int http_connect(URLContext *h, const char *path, const char *local_path,
                         const char *hoststr, const char *auth,
                         const char *proxyauth, int *new_location);
@@ -408,6 +415,7 @@ int ff_http_do_new_request2(URLContext *h, const char *uri, AVDictionary **opts)
     char hostname1[1024], hostname2[1024], proto1[10], proto2[10];
     int port1, port2;
 
+    http_invalidate_auth(&s->auth_state);
     s->start_time_ms = av_gettime() / 1000;
 
     if (!h->prot ||
@@ -1283,6 +1291,21 @@ static void bprint_escaped_path(AVBPrint *bp, const char *path)
     }
 }
 
+#define unlikely(x) __builtin_expect(!!(x),0)
+
+/* This might be updated by parsing nonceExpireTime from command json */
+int64_t nonce_expire_time = ((int64_t)60 * 60 - 3) * 1000000; /* 1 hour - 3 second by default.
+                                                                 * We're doing that -3 since we don't
+                                                                 * know exact nonce birth time, so we
+                                                                 * start trying to acquire new one 3
+                                                                 * seconds in advance */
+
+static void http_invalidate_auth(HTTPAuthState *s)
+{
+    if (unlikely(av_gettime() - s->used_nonce_birth_time > nonce_expire_time))
+        s->auth_type = HTTP_AUTH_NONE;
+}
+
 static int http_connect(URLContext *h, const char *path, const char *local_path,
                         const char *hoststr, const char *auth,
                         const char *proxyauth, int *new_location)
@@ -1432,6 +1455,14 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
     err = http_read_header(h, new_location);
     if (err < 0)
         goto done;
+
+    pthread_mutex_lock(&nonce_birth_time_lock);
+    if (memcmp(current_nonce, s->auth_state.digest_params.nonce, sizeof(current_nonce))) {
+        memcpy(current_nonce, s->auth_state.digest_params.nonce, sizeof(current_nonce));
+        nonce_birth_time = av_gettime();
+    }
+    s->auth_state.used_nonce_birth_time = nonce_birth_time;
+    pthread_mutex_unlock(&nonce_birth_time_lock);
 
     if (*new_location)
         s->off = off;
