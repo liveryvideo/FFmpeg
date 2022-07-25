@@ -880,6 +880,7 @@ void pool_free_mem_context(AVIOContext **out, int conn_nr) {
     conn = get_conn(conn_nr);
 
     if (conn->mem != NULL) {
+        av_free((*out)->buffer);
         avio_context_free(out);
         av_free(conn->mem->buf);
         av_free(conn->mem);
