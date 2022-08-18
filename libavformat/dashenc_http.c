@@ -300,7 +300,9 @@ static void remove_from_list(connection *conn) {
 
     if (conn == connections) {
         av_log(NULL, AV_LOG_INFO, "Removing conn_nr: %d, resetting next->prev: %d, tail: %d \n", conn->nr, next->nr, connections_tail->nr);
-        next->prev = NULL;
+        if (next != NULL) {
+            next->prev = NULL;
+        }
         connections = next;
         return;
     }
@@ -324,6 +326,8 @@ static void remove_from_list(connection *conn) {
  */
 static void remove_conn(connection *conn) {
     remove_from_list(conn);
+
+    ff_format_io_close(conn->s, &conn->out);
 
     av_log(NULL, AV_LOG_INFO, "remove_conn. Current tail: %d\n", connections_tail->nr);
     pthread_mutex_destroy(&conn->chunks_mutex);
@@ -554,7 +558,6 @@ static connection *claim_connection(char *url, int need_new_connection) {
     }
 
     if (conn_nr == -1) {
-        pthread_attr_t  attr;
         conn = calloc(1, sizeof(*conn));
         if (conn == NULL) {
             pthread_mutex_unlock(&connections_mutex);
@@ -573,17 +576,7 @@ static connection *claim_connection(char *url, int need_new_connection) {
         pthread_mutex_init(&conn->chunks_mutex, NULL);
         pthread_cond_init(&conn->chunks_mutex_cv, NULL);
 
-        if (pthread_attr_init(&attr)) {
-            av_log(NULL, AV_LOG_ERROR, "Error creating thread attributes.\n");
-            abort();
-        }
-
-        if (pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED)) {
-            av_log(NULL, AV_LOG_ERROR, "Error setting thread attributes.\n");
-            abort();
-        }
-
-        if(pthread_create(&conn->w_thread, &attr, thr_io_write, conn)) {
+        if(pthread_create(&conn->w_thread, NULL, thr_io_write, conn)) {
             av_log(NULL, AV_LOG_ERROR, "Error creating thread so abort.\n");
             abort();
         }
@@ -696,6 +689,14 @@ int pool_io_open(AVFormatContext *s, char *filename,
 /**
  * Closes the request.
  */
+static void pool_conn_close(connection *conn) {
+    conn->chunks_done = 1;
+
+    pthread_mutex_lock(&conn->chunks_mutex);
+    pthread_cond_signal(&conn->chunks_mutex_cv);
+    pthread_mutex_unlock(&conn->chunks_mutex);
+}
+
 void pool_io_close(AVFormatContext *s, char *filename, int conn_nr) {
     connection *conn;
 
@@ -706,26 +707,15 @@ void pool_io_close(AVFormatContext *s, char *filename, int conn_nr) {
 
     conn = get_conn(conn_nr);
     av_log(NULL, AV_LOG_INFO, "pool_io_close conn_nr: %d, nr_of_chunks: %d\n", conn_nr, conn->nr_of_chunks);
-
-    conn->chunks_done = 1;
-
-    pthread_mutex_lock(&conn->chunks_mutex);
-    pthread_cond_signal(&conn->chunks_mutex_cv);
-    pthread_mutex_unlock(&conn->chunks_mutex);
+    pool_conn_close(conn);
 }
 
-static void pool_free(AVFormatContext *s, int conn_nr) {
-    connection *conn;
+static void pool_free(AVFormatContext *s, connection *conn) {
+    av_log(NULL, AV_LOG_DEBUG, "pool_free conn_nr: %d\n", conn->nr);
 
-    if (conn_nr < 0) {
-        av_log(s, AV_LOG_WARNING, "Invalid conn_nr in pool_free. conn_nr: %d\n", conn_nr);
-        return;
+    if (conn->out) {
+        ff_format_io_close(s, &conn->out);
     }
-
-    conn = get_conn(conn_nr);
-    av_log(NULL, AV_LOG_DEBUG, "pool_free conn_nr: %d\n", conn_nr);
-
-    ff_format_io_close(s, &conn->out);
 
     pthread_mutex_lock(&connections_mutex);
     conn->opened = 0;
@@ -734,11 +724,11 @@ static void pool_free(AVFormatContext *s, int conn_nr) {
 }
 
 void pool_free_all(AVFormatContext *s) {
-    connection *conn = connections;
+    int ret = 0;
     int all_conns_done = 0;
+    connection *conn = NULL;
 
     av_log(NULL, AV_LOG_INFO, "pool_free_all\n");
-
 
     // Signal the connections to close
     pthread_mutex_lock(&stop_mutex);
@@ -747,26 +737,42 @@ void pool_free_all(AVFormatContext *s) {
 
     av_log(NULL, AV_LOG_INFO, "pool_free_all waiting for requests to finish\n");
 
+    pthread_mutex_lock(&connections_mutex);
+
     while (!all_conns_done) {
-        pthread_mutex_lock(&connections_mutex);
+        pthread_t tid;
+        conn = connections;
         all_conns_done = 1;
         while (conn) {
             if (conn->claimed) {
                 all_conns_done = 0;
+                break;
             }
             conn = conn->next;
         }
-        pthread_mutex_unlock(&connections_mutex);
 
-        usleep(10000);
+        if (conn == NULL) {
+            break;
+        }
+
+        tid = conn->w_thread;
+        pool_conn_close(conn);
+
+        pthread_mutex_unlock(&connections_mutex);
+        ret = pthread_join(tid, NULL);
+        if (ret) {
+            av_log(NULL, AV_LOG_INFO, "Failed to join w_thread of connection %d: %d\n", conn->nr, ret);
+            abort();
+        }
+        pthread_mutex_lock(&connections_mutex);
     }
+    pthread_mutex_unlock(&connections_mutex);
 
     av_log(NULL, AV_LOG_INFO, "pool_free_all free memory\n");
+    conn = connections;
     while (conn) {
         //close conn->out
-        if (conn->out)
-            pool_free(s, conn->nr);
-
+        pool_free(s, conn);
         conn = conn->next;
     }
 }
