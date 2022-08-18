@@ -162,14 +162,18 @@ static void write_chunk(connection *conn, int chunk_nr) {
         av_log(NULL, AV_LOG_ERROR, "chunk issue! chunk_nr: %d, conn_nr: %d, size: %d\n", chunk_nr, conn->nr, chunk->size);
     }
 
+    av_log(NULL, AV_LOG_INFO, "Writing chunk_nr: %d, conn_nr: %d, size: %d\n", chunk_nr, conn->nr, chunk->size);
     avio_write(conn->out, chunk->buf, chunk->size);
+    av_log(NULL, AV_LOG_INFO, "Wrote chunk_nr: %d, conn_nr: %d, size: %d\n", chunk_nr, conn->nr, chunk->size);
     after_write_time_ms = av_gettime() / 1000;
     write_time_ms = after_write_time_ms - start_time_ms;
     if (write_time_ms > 100) {
         av_log(NULL, AV_LOG_WARNING, "It took %"PRId64"(ms) to write chunk %d. conn_nr: %d\n", write_time_ms, chunk_nr, conn->nr);
     }
 
+    av_log(NULL, AV_LOG_INFO, "Flushing chunk_nr: %d, conn_nr: %d\n", chunk_nr, conn->nr);
     avio_flush(conn->out);
+    av_log(NULL, AV_LOG_INFO, "Flushed chunk_nr: %d, conn_nr: %d\n", chunk_nr, conn->nr);
     flush_time_ms = av_gettime() / 1000 - after_write_time_ms;
     if (flush_time_ms > 100) {
         av_log(NULL, AV_LOG_WARNING, "It took %"PRId64"(ms) to flush chunk %d. conn_nr: %d\n", flush_time_ms, chunk_nr, conn->nr);
@@ -300,7 +304,9 @@ static void remove_from_list(connection *conn) {
 
     if (conn == connections) {
         av_log(NULL, AV_LOG_INFO, "Removing conn_nr: %d, resetting next->prev: %d, tail: %d \n", conn->nr, next->nr, connections_tail->nr);
-        next->prev = NULL;
+        if (next != NULL) {
+            next->prev = NULL;
+        }
         connections = next;
         return;
     }
@@ -462,6 +468,7 @@ static void *thr_io_write(void *arg) {
     int conn_nr = conn->nr;
     //https://computing.llnl.gov/tutorials/pthreads/#ConditionVariables
 
+    av_log(NULL, AV_LOG_INFO, "Staring thread for connection #%d.\n", conn_nr);
     for (;;) {
         pthread_mutex_lock(&conn->chunks_mutex);
 
@@ -734,8 +741,6 @@ static void pool_free(AVFormatContext *s, int conn_nr) {
 }
 
 void pool_free_all(AVFormatContext *s) {
-    connection *conn = connections;
-    int all_conns_done = 0;
 
     av_log(NULL, AV_LOG_INFO, "pool_free_all\n");
 
@@ -747,21 +752,33 @@ void pool_free_all(AVFormatContext *s) {
 
     av_log(NULL, AV_LOG_INFO, "pool_free_all waiting for requests to finish\n");
 
+    int all_conns_done = 0;
+    pthread_mutex_lock(&connections_mutex);
+    connection *conn = NULL;
+
     while (!all_conns_done) {
-        pthread_mutex_lock(&connections_mutex);
+        conn = connections;
         all_conns_done = 1;
         while (conn) {
+            av_log(NULL, AV_LOG_INFO, "%d %d\n", conn->nr, conn->claimed);
             if (conn->claimed) {
                 all_conns_done = 0;
+                break;
             }
+
             conn = conn->next;
         }
-        pthread_mutex_unlock(&connections_mutex);
 
-        usleep(10000);
+        pthread_t tid = conn->w_thread;
+        av_log(NULL, AV_LOG_INFO, "Joining w_thread of connection %d\n", conn->nr);
+        pthread_mutex_unlock(&connections_mutex);
+        pthread_join(tid, NULL);
+        pthread_mutex_lock(&connections_mutex);
     }
+    pthread_mutex_unlock(&connections_mutex);
 
     av_log(NULL, AV_LOG_INFO, "pool_free_all free memory\n");
+    conn = connections;
     while (conn) {
         //close conn->out
         if (conn->out)
