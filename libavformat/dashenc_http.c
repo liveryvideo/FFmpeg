@@ -16,11 +16,13 @@
 #include "libavformat/internal.h"
 #include "libavutil/avassert.h"
 #include "libavutil/avutil.h"
+#include "libavutil/avstring.h"
 #include "libavutil/time.h"
 
 #include "avio_internal.h"
 #include "dashenc_pool.h"
 #include "dashenc_stats.h"
+#include "config_components.h"
 #if CONFIG_HTTP_PROTOCOL
 #include "http.h"
 #endif

@@ -49,6 +49,7 @@
 #include "bswapdsp.h"
 #endif
 
+#include "codec_internal.h"
 #include "exrdsp.h"
 #include "get_bits.h"
 #include "internal.h"
@@ -1014,7 +1015,9 @@ static int dwa_uncompress(EXRContext *s, const uint8_t *src, int compressed_size
     dc_count = AV_RL64(src + 72);
     ac_compression = AV_RL64(src + 80);
 
-    if (compressed_size < 88LL + lo_size + ac_size + dc_size + rle_csize)
+    if (   compressed_size < (uint64_t)(lo_size | ac_size | dc_size | rle_csize) || compressed_size < 88LL + lo_size + ac_size + dc_size + rle_csize
+        || ac_count > (uint64_t)INT_MAX/2
+    )
         return AVERROR_INVALIDDATA;
 
     bytestream2_init(&gb, src + 88, compressed_size - 88);
@@ -1031,11 +1034,13 @@ static int dwa_uncompress(EXRContext *s, const uint8_t *src, int compressed_size
     }
 
     if (ac_size > 0) {
-        unsigned long dest_len = ac_count * 2LL;
+        unsigned long dest_len;
         GetByteContext agb = gb;
 
         if (ac_count > 3LL * td->xsize * s->scan_lines_per_block)
             return AVERROR_INVALIDDATA;
+
+        dest_len = ac_count * 2LL;
 
         av_fast_padded_malloc(&td->ac_data, &td->ac_size, dest_len);
         if (!td->ac_data)
@@ -1060,11 +1065,13 @@ static int dwa_uncompress(EXRContext *s, const uint8_t *src, int compressed_size
     }
 
     {
-        unsigned long dest_len = dc_count * 2LL;
+        unsigned long dest_len;
         GetByteContext agb = gb;
 
         if (dc_count != dc_w * dc_h * 3)
             return AVERROR_INVALIDDATA;
+
+        dest_len = dc_count * 2LL;
 
         av_fast_padded_malloc(&td->dc_data, &td->dc_size, FFALIGN(dest_len, 64) * 2);
         if (!td->dc_data)
@@ -1234,7 +1241,8 @@ static int decode_block(AVCodecContext *avctx, void *tdata,
         td->ysize = FFMIN(s->tile_attr.ySize, s->ydelta - tile_y * s->tile_attr.ySize);
         td->xsize = FFMIN(s->tile_attr.xSize, s->xdelta - tile_x * s->tile_attr.xSize);
 
-        if (td->xsize * (uint64_t)s->current_channel_offset > INT_MAX)
+        if (td->xsize * (uint64_t)s->current_channel_offset > INT_MAX ||
+            av_image_check_size2(td->xsize, td->ysize, s->avctx->max_pixels, AV_PIX_FMT_NONE, 0, s->avctx) < 0)
             return AVERROR_INVALIDDATA;
 
         td->channel_line_size = td->xsize * s->current_channel_offset;/* uncompress size of one line */
@@ -1258,7 +1266,8 @@ static int decode_block(AVCodecContext *avctx, void *tdata,
         td->ysize          = FFMIN(s->scan_lines_per_block, s->ymax - line + 1); /* s->ydelta - line ?? */
         td->xsize          = s->xdelta;
 
-        if (td->xsize * (uint64_t)s->current_channel_offset > INT_MAX)
+        if (td->xsize * (uint64_t)s->current_channel_offset > INT_MAX ||
+            av_image_check_size2(td->xsize, td->ysize, s->avctx->max_pixels, AV_PIX_FMT_NONE, 0, s->avctx) < 0)
             return AVERROR_INVALIDDATA;
 
         td->channel_line_size = td->xsize * s->current_channel_offset;/* uncompress size of one line */
@@ -1298,6 +1307,9 @@ static int decode_block(AVCodecContext *avctx, void *tdata,
          /* bytes to add at the right of the display window */
         axmax = FFMAX(0, (avctx->width - (s->xmax + 1))) * step;
     }
+
+    if (avctx->max_pixels && uncompressed_size > avctx->max_pixels * 16LL)
+        return AVERROR_INVALIDDATA;
 
     if (data_size < uncompressed_size || s->is_tile) { /* td->tmp is use for tile reorganization */
         av_fast_padded_malloc(&td->tmp, &td->tmp_size, uncompressed_size);
@@ -1823,8 +1835,8 @@ static int decode_header(EXRContext *s, AVFrame *frame)
             dx = bytestream2_get_le32(gb);
             dy = bytestream2_get_le32(gb);
 
-            s->w = dx - sx + 1;
-            s->h = dy - sy + 1;
+            s->w = (unsigned)dx - sx + 1;
+            s->h = (unsigned)dy - sy + 1;
 
             continue;
         } else if ((var_size = check_header_variable(s, "lineOrder",
@@ -2013,13 +2025,11 @@ fail:
     return ret;
 }
 
-static int decode_frame(AVCodecContext *avctx, void *data,
+static int decode_frame(AVCodecContext *avctx, AVFrame *picture,
                         int *got_frame, AVPacket *avpkt)
 {
     EXRContext *s = avctx->priv_data;
     GetByteContext *gb = &s->gb;
-    ThreadFrame frame = { .f = data };
-    AVFrame *picture = data;
     uint8_t *ptr;
 
     int i, y, ret, ymax;
@@ -2140,7 +2150,7 @@ static int decode_frame(AVCodecContext *avctx, void *data,
         s->scan_lines_per_block;
     }
 
-    if ((ret = ff_thread_get_buffer(avctx, &frame, 0)) < 0)
+    if ((ret = ff_thread_get_buffer(avctx, picture, 0)) < 0)
         return ret;
 
     if (bytestream2_get_bytes_left(gb)/8 < nb_blocks)
@@ -2244,9 +2254,9 @@ static av_cold int decode_init(AVCodecContext *avctx)
     }
 
     // allocate thread data, used for non EXR_RAW compression types
-    s->thread_data = av_mallocz_array(avctx->thread_count, sizeof(EXRThreadData));
+    s->thread_data = av_calloc(avctx->thread_count, sizeof(*s->thread_data));
     if (!s->thread_data)
-        return AVERROR_INVALIDDATA;
+        return AVERROR(ENOMEM);
 
     return 0;
 }
@@ -2332,16 +2342,17 @@ static const AVClass exr_class = {
     .version    = LIBAVUTIL_VERSION_INT,
 };
 
-AVCodec ff_exr_decoder = {
-    .name             = "exr",
-    .long_name        = NULL_IF_CONFIG_SMALL("OpenEXR image"),
-    .type             = AVMEDIA_TYPE_VIDEO,
-    .id               = AV_CODEC_ID_EXR,
+const FFCodec ff_exr_decoder = {
+    .p.name           = "exr",
+    .p.long_name      = NULL_IF_CONFIG_SMALL("OpenEXR image"),
+    .p.type           = AVMEDIA_TYPE_VIDEO,
+    .p.id             = AV_CODEC_ID_EXR,
     .priv_data_size   = sizeof(EXRContext),
     .init             = decode_init,
     .close            = decode_end,
-    .decode           = decode_frame,
-    .capabilities     = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_FRAME_THREADS |
+    FF_CODEC_DECODE_CB(decode_frame),
+    .p.capabilities   = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_FRAME_THREADS |
                         AV_CODEC_CAP_SLICE_THREADS,
-    .priv_class       = &exr_class,
+    .caps_internal    = FF_CODEC_CAP_INIT_THREADSAFE,
+    .p.priv_class     = &exr_class,
 };
