@@ -99,8 +99,8 @@ static VLC ccitt_vlc[2], ccitt_group3_2d_vlc;
 
 static av_cold void ccitt_unpack_init(void)
 {
-    static VLC_TYPE code_table1[528][2];
-    static VLC_TYPE code_table2[648][2];
+    static VLCElem code_table1[528];
+    static VLCElem code_table2[648];
     int i;
 
     ccitt_vlc[0].table = code_table1;
@@ -283,6 +283,8 @@ static int decode_group3_2d_line(AVCodecContext *avctx, GetBitContext *gb,
             for (k = 0; k < 2; k++) {
                 run = 0;
                 for (;;) {
+                    if (get_bits_left(gb) <= 0)
+                        return AVERROR_INVALIDDATA;
                     t = get_vlc2(gb, ccitt_vlc[mode].table, 9, 2);
                     if (t == -1) {
                         av_log(avctx, AV_LOG_ERROR, "Incorrect code\n");
