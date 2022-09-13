@@ -12,6 +12,8 @@
 #include <pthread.h>
 #include <unistd.h>
 
+#include <sys/queue.h>
+
 #include "dashenc_http.h"
 
 #include "config.h"
@@ -61,8 +63,7 @@ typedef struct connection {
     int64_t release_time;    /* Time the last request of the connection has finished */
     AVFormatContext *s;      /* Used to clean up the TCP connection if closing of a request fails */
     pthread_t w_thread;      /* Thread that is used to write the chunks */
-    struct connection *next; /* Pointer to the next connection in the list */
-    struct connection *prev; /* Pointer to the previous connection in the list */
+    LIST_ENTRY(connection) entries;
 
     //Request data that is not cleaned between requests
     pthread_mutex_t chunks_mutex;
@@ -83,14 +84,17 @@ typedef struct connection {
     buffer_data *mem;       /* Optional buffer to hold file content that will be written */
 } connection;
 
-static connection *connections = NULL;  /* an array with pointers to connections */
-static connection *connections_tail = NULL;
+/* If there will be to may connections, this should be replaced with hashtable */
+LIST_HEAD(connections_head, connection) connections = LIST_HEAD_INITIALIZER(connections);
+
+static pthread_mutex_t connections_mutex = PTHREAD_MUTEX_INITIALIZER;
+const static int max_idle_connections = 15;
 static int nr_of_connections = 0;
 static int total_nr_of_connections = 0; /* nr of connections made in total */
-static pthread_mutex_t connections_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 static stats *chunk_write_time_stats;
 static stats *conn_count_stats;
-static _Atomic bool should_stop;
+static _Atomic bool should_stop = false;
 
 //defined here because it has a circular dependency with retry()
 static void *thr_io_close(connection *conn);
@@ -127,8 +131,6 @@ static void abort_if_needed(int mustSucceed) {
         abort();
     }
 }
-
-
 
 static void write_chunk(connection *conn, int chunk_nr) {
     int64_t start_time_ms;
@@ -172,27 +174,28 @@ static void write_chunk(connection *conn, int chunk_nr) {
     }
 
     print_complete_stats(chunk_write_time_stats, av_gettime() / 1000 - start_time_ms);
-    print_complete_stats(conn_count_stats, nr_of_connections);
+    pthread_mutex_lock(&connections_mutex);
+    int conn_num = nr_of_connections;
+    pthread_mutex_unlock(&connections_mutex);
+    print_complete_stats(conn_count_stats, conn_num);
 }
 
 static connection *get_conn(int conn_nr) {
-    connection *conn;
+    connection *conn = NULL;
 
     pthread_mutex_lock(&connections_mutex);
-    conn = connections;
-
-    while (conn) {
+    LIST_FOREACH(conn, &connections, entries) {
         if (conn->nr == conn_nr) {
-            pthread_mutex_unlock(&connections_mutex);
-            return conn;
+            break;
         }
-
-        conn = conn->next;
     }
-
-    av_log(NULL, AV_LOG_ERROR, "connection %d not found.\n", conn_nr);
-    av_log(NULL, AV_LOG_ERROR, "First conn_nr: %d.\n", connections->nr);
-    abort();
+    pthread_mutex_unlock(&connections_mutex);
+    if (conn->nr != conn_nr) {
+        av_log(NULL, AV_LOG_ERROR, "connection %d not found.\n", conn_nr);
+        av_log(NULL, AV_LOG_ERROR, "First conn_nr: %d.\n", LIST_FIRST(&connections)->nr);
+        abort();
+    }
+    return conn;
 }
 
 // Open connection if not open and start doing the request
@@ -288,28 +291,9 @@ static void retry(connection *conn) {
 }
 
 static void remove_from_list(connection *conn) {
-    connection *prev = conn->prev;
-    connection *next = conn->next;
-
-    if (conn == connections) {
-        av_log(NULL, AV_LOG_INFO, "Removing conn_nr: %d, resetting next->prev: %d, tail: %d \n", conn->nr, next->nr, connections_tail->nr);
-        if (next != NULL) {
-            next->prev = NULL;
-        }
-        connections = next;
-        return;
-    }
-
-    if (next != NULL) {
-        av_log(NULL, AV_LOG_INFO, "Removing conn_nr: %d, set prev->next: %d and next->prev: %d, tail: %d\n", conn->nr, conn->next->nr, prev->nr, connections_tail->nr);
-        prev->next = conn->next;
-        next->prev = prev;
-        return;
-    }
-
-    av_log(NULL, AV_LOG_INFO, "Removing conn_nr: %d, resetting prev: %d, tail: %d.\n", conn->nr, prev->nr, connections_tail->nr);
-    prev->next = NULL;
-    connections_tail = prev;
+    av_log(NULL, AV_LOG_INFO, "Removing conn_nr: %d\n", conn->nr);
+    LIST_REMOVE(conn, entries);
+    nr_of_connections--;
 }
 
 /**
@@ -318,20 +302,19 @@ static void remove_from_list(connection *conn) {
  * It also expects to be started from the connection thread.
  */
 static void remove_conn(connection *conn) {
+    pthread_mutex_lock(&connections_mutex);
     remove_from_list(conn);
+    pthread_mutex_unlock(&connections_mutex);
 
     pthread_mutex_lock(&conn->open_mutex);
     conn->opened = false;
     ff_format_io_close(conn->s, &conn->out);
     pthread_mutex_unlock(&conn->open_mutex);
 
-    av_log(NULL, AV_LOG_INFO, "remove_conn. Current tail: %d\n", connections_tail->nr);
     pthread_mutex_destroy(&conn->open_mutex);
     pthread_mutex_destroy(&conn->chunks_mutex);
     pthread_cond_destroy(&conn->chunks_mutex_cv);
-    nr_of_connections--;
     free(conn);
-    pthread_mutex_unlock(&connections_mutex);
     pthread_exit(NULL);
 }
 
@@ -377,13 +360,11 @@ static void *thr_io_close(connection *conn) {
             retry(conn);
     }
 
-    pthread_mutex_lock(&connections_mutex);
     release_request(conn);
     if (should_stop) {
         remove_conn(conn);
         //The thread will be stopped at this point and connections_mutex released by remove_conn
     }
-    pthread_mutex_unlock(&connections_mutex);
 
     pthread_mutex_lock(&conn->open_mutex);
     conn->req_opened = false;
@@ -486,7 +467,6 @@ static void *thr_io_write(void *arg) {
         pthread_mutex_unlock(&conn->chunks_mutex);
 
         if (conn->cleanup_requested) {
-            pthread_mutex_lock(&connections_mutex);
             remove_conn(conn);
             //The thread will be stopped at this point and connections_mutex released by remove_conn
         }
@@ -517,22 +497,23 @@ static void *thr_io_write(void *arg) {
  * Expects connections_mutex to be locked.
  */
 static void free_idle_connections(int nr_of_idle_connections, int nr_of_connections_to_keep) {
-    connection *conn_l = connections;
-    connection *next;
+    connection *conn = NULL;
 
     av_log(NULL, AV_LOG_INFO, "free_idle_connections, nr_of_idle_connections: %d, nr_of_connections_to_keep: %d\n", nr_of_idle_connections, nr_of_connections_to_keep);
 
-    while (conn_l && (nr_of_idle_connections > nr_of_connections_to_keep)) {
-        next = conn_l->next;
-        if (!conn_l->claimed) {
+    LIST_FOREACH(conn, &connections, entries) {
+        if (nr_of_idle_connections <= nr_of_connections_to_keep) {
+            break;
+        }
+
+        if (!conn->claimed) {
             //signal connection thread
-            conn_l->cleanup_requested = 1;
-            pthread_mutex_lock(&conn_l->chunks_mutex);
-            pthread_cond_signal(&conn_l->chunks_mutex_cv);
-            pthread_mutex_unlock(&conn_l->chunks_mutex);
+            conn->cleanup_requested = 1;
+            pthread_mutex_lock(&conn->chunks_mutex);
+            pthread_cond_signal(&conn->chunks_mutex_cv);
+            pthread_mutex_unlock(&conn->chunks_mutex);
             nr_of_idle_connections--;
         }
-        conn_l = next;
     }
 }
 
@@ -545,7 +526,7 @@ static connection *claim_connection(char *url, int need_new_connection) {
     int conn_nr = -1;
     int conn_idle_count = 0;
     connection *conn = NULL;
-    connection *conn_l = connections;
+    connection *conn_l = NULL;
     size_t len;
 
     if (url == NULL) {
@@ -554,8 +535,7 @@ static connection *claim_connection(char *url, int need_new_connection) {
     }
 
     pthread_mutex_lock(&connections_mutex);
-
-    while (conn_l) {
+    LIST_FOREACH(conn_l, &connections, entries) {
         if (!conn_l->claimed && !conn_l->cleanup_requested) {
             if ((conn_nr == -1) || (conn->release_time != 0 && conn_l->release_time < lowest_release_time)) {
                 conn_nr = conn_l->nr;
@@ -564,7 +544,6 @@ static connection *claim_connection(char *url, int need_new_connection) {
             }
             conn_idle_count++;
         }
-        conn_l = conn_l->next;
     }
 
     if (conn_nr == -1) {
@@ -613,8 +592,8 @@ static connection *claim_connection(char *url, int need_new_connection) {
     av_strlcpy(conn->url, url, len);
     conn->claimed = 1;
 
-    if(conn_idle_count > 15){
-        free_idle_connections(conn_idle_count, 15);
+    if(conn_idle_count > max_idle_connections){
+        free_idle_connections(conn_idle_count, max_idle_connections);
     }
 
     pthread_mutex_unlock(&connections_mutex);
@@ -627,7 +606,6 @@ static connection *claim_connection(char *url, int need_new_connection) {
  * Only used for non persistent HTTP connections or file based output
  */
 static int open_request(AVFormatContext *s, char *url, AVDictionary **options) {
-    int ret;
     connection *conn = claim_connection(url, 0);
 
     pthread_mutex_lock(&conn->open_mutex);
@@ -635,7 +613,7 @@ static int open_request(AVFormatContext *s, char *url, AVDictionary **options) {
         av_log(s, AV_LOG_WARNING, "open_request while connection might be open. This is TODO for when not using persistent connections. conn_nr: %d\n", conn->nr);
     }
 
-    ret = s->io_open(s, &conn->out, url, AVIO_FLAG_WRITE, options);
+    int ret = s->io_open(s, &conn->out, url, AVIO_FLAG_WRITE, options);
     if (ret >= 0) {
         ret = conn->nr;
         conn->opened = true;
@@ -699,14 +677,12 @@ static void pool_conn_close(connection *conn) {
 }
 
 void pool_io_close(AVFormatContext *s, char *filename, int conn_nr) {
-    connection *conn;
-
     if (conn_nr < 0) {
         av_log(s, AV_LOG_WARNING, "Invalid conn_nr in pool_io_close for filename: %s, conn_nr: %d\n", filename, conn_nr);
         return;
     }
 
-    conn = get_conn(conn_nr);
+    connection *conn = get_conn(conn_nr);
     av_log(NULL, AV_LOG_INFO, "pool_io_close conn_nr: %d, nr_of_chunks: %d\n", conn_nr, conn->nr_of_chunks);
     pool_conn_close(conn);
 }
@@ -726,35 +702,32 @@ static void pool_free(AVFormatContext *s, connection *conn) {
 
 void pool_free_all(AVFormatContext *s) {
     int ret = 0;
-    int all_conns_done = 0;
+    bool all_conns_done = false;
     connection *conn = NULL;
 
     av_log(NULL, AV_LOG_INFO, "pool_free_all\n");
 
     // Signal the connections to close
-    should_stop_var = true;
+    should_stop = true;
 
     av_log(NULL, AV_LOG_INFO, "pool_free_all waiting for requests to finish\n");
 
     pthread_mutex_lock(&connections_mutex);
 
     while (!all_conns_done) {
-        pthread_t tid;
-        conn = connections;
-        all_conns_done = 1;
-        while (conn) {
+        all_conns_done = true;
+        LIST_FOREACH(conn, &connections, entries) {
             if (conn->claimed) {
-                all_conns_done = 0;
+                all_conns_done = false;
                 break;
             }
-            conn = conn->next;
         }
 
-        if (conn == NULL) {
+        if (all_conns_done) {
             break;
         }
 
-        tid = conn->w_thread;
+        pthread_t tid = conn->w_thread;
         pool_conn_close(conn);
 
         pthread_mutex_unlock(&connections_mutex);
@@ -765,47 +738,38 @@ void pool_free_all(AVFormatContext *s) {
         }
         pthread_mutex_lock(&connections_mutex);
     }
-    pthread_mutex_unlock(&connections_mutex);
 
     av_log(NULL, AV_LOG_INFO, "pool_free_all free memory\n");
-    conn = connections;
-    while (conn) {
+    LIST_FOREACH(conn, &connections, entries) {
         //close conn->out
         pool_free(s, conn);
-        conn = conn->next;
     }
+    pthread_mutex_unlock(&connections_mutex);
 }
 
 
 void pool_write_flush_mem(int conn_nr) {
-    connection *conn;
-    int read_size;
-
     if (conn_nr < 0) {
         av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr in pool_write_flush_mem. conn_nr: %d\n", conn_nr);
         return;
     }
 
-    conn = get_conn(conn_nr);
-
-    read_size = conn->mem->ptr - conn->mem->buf;
+    connection *conn = get_conn(conn_nr);
+    int read_size = conn->mem->ptr - conn->mem->buf;
 
     pool_write_flush(conn->mem->buf, read_size, conn_nr);
 }
 
 void pool_write_flush(const unsigned char *buf, int size, int conn_nr) {
-    connection *conn;
-    chunk *chunk_ptr;
-
     if (conn_nr < 0) {
         av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr in pool_write_flush. conn_nr: %d\n", conn_nr);
         return;
     }
 
-    conn = get_conn(conn_nr);
+    connection *conn = get_conn(conn_nr);
 
     //Save the chunk in memory
-    chunk_ptr = malloc(sizeof(chunk));
+    chunk *chunk_ptr = malloc(sizeof(chunk));
     chunk_ptr->size = size;
     chunk_ptr->nr = conn->nr_of_chunks;
     chunk_ptr->buf = malloc(size);
@@ -846,16 +810,13 @@ static int write_packet(void *opaque, uint8_t *buf, int buf_size) {
  * Should be freed with pool_free_mem_context()
  */
 AVIOContext *pool_create_mem_context(int conn_nr) {
-    connection *conn;
-    unsigned char *avio_ctx_buffer;
-    const size_t bd_buf_size = 10;
-    size_t avio_ctx_buffer_size = 20;
-
     if (conn_nr < 0) {
         av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr in pool_create_mem_context. conn_nr: %d\n", conn_nr);
         return NULL;
     }
-    conn = get_conn(conn_nr);
+
+    const size_t bd_buf_size = 10;
+    connection *conn = get_conn(conn_nr);
 
     conn->mem = av_malloc(sizeof(buffer_data));
     conn->mem->room = 0;
@@ -866,7 +827,9 @@ AVIOContext *pool_create_mem_context(int conn_nr) {
         return NULL;
     }
     conn->mem->size = conn->mem->room = bd_buf_size;
-    avio_ctx_buffer = av_malloc(avio_ctx_buffer_size);
+
+    const size_t avio_ctx_buffer_size = 20;
+    unsigned char *avio_ctx_buffer = av_malloc(avio_ctx_buffer_size);
     if (!avio_ctx_buffer) {
         av_log(NULL, AV_LOG_WARNING, "Could not allocate memory avio_ctx_buffer_size. conn_nr: %d\n", conn_nr);
         return NULL;
@@ -876,13 +839,12 @@ AVIOContext *pool_create_mem_context(int conn_nr) {
 }
 
 void pool_free_mem_context(AVIOContext **out, int conn_nr) {
-     connection *conn;
-
     if (conn_nr < 0) {
         av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr in pool_free_mem_context. conn_nr: %d\n", conn_nr);
         return;
     }
-    conn = get_conn(conn_nr);
+
+    connection *conn = get_conn(conn_nr);
 
     if (conn->mem != NULL) {
         av_free((*out)->buffer);
