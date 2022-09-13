@@ -7,6 +7,7 @@
  *
  */
 
+#include <stdatomic.h>
 #include <pthread.h>
 #include <unistd.h>
 
@@ -85,21 +86,10 @@ static int total_nr_of_connections = 0; /* nr of connections made in total */
 static pthread_mutex_t connections_mutex = PTHREAD_MUTEX_INITIALIZER;
 static stats *chunk_write_time_stats;
 static stats *conn_count_stats;
-
-static int should_stop_var;
-static pthread_mutex_t stop_mutex = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic bool should_stop;
 
 //defined here because it has a circular dependency with retry()
 static void *thr_io_close(connection *conn);
-
-static int should_stop(void) {
-    int ret = 0;
-    pthread_mutex_lock(&stop_mutex);
-    ret = should_stop_var;
-    pthread_mutex_unlock(&stop_mutex);
-
-    return ret;
-}
 
 /* This method expects the lock to be already done.*/
 static void release_request(connection *conn) {
@@ -381,7 +371,7 @@ static void *thr_io_close(connection *conn) {
 
     pthread_mutex_lock(&connections_mutex);
     release_request(conn);
-    if (should_stop()) {
+    if (should_stop) {
         remove_conn(conn);
         //The thread will be stopped at this point and connections_mutex released by remove_conn
     }
@@ -733,9 +723,7 @@ void pool_free_all(AVFormatContext *s) {
     av_log(NULL, AV_LOG_INFO, "pool_free_all\n");
 
     // Signal the connections to close
-    pthread_mutex_lock(&stop_mutex);
-    should_stop_var = 1;
-    pthread_mutex_unlock(&stop_mutex);
+    should_stop_var = true;
 
     av_log(NULL, AV_LOG_INFO, "pool_free_all waiting for requests to finish\n");
 
