@@ -53,14 +53,14 @@ typedef struct chunk {
 typedef struct connection {
     int nr;                  /* Number of the connection, used to lookup this connection in the connections list */
     AVIOContext *out;        /* The TCP connection */
-    int claimed;             /* This connection is claimed for a specific request */
+    _Atomic bool claimed;             /* This connection is claimed for a specific request */
 
     bool req_opened;         /* If true the request is opened and more data can be written to it, only accessed from w_thread */
     bool opened;     /* TCP connection (out) is opened */
     bool open_error; /* If true the connection could not be opened */
     pthread_mutex_t open_mutex;
 
-    int64_t release_time;    /* Time the last request of the connection has finished */
+    _Atomic int64_t release_time;    /* Time the last request of the connection has finished */
     AVFormatContext *s;      /* Used to clean up the TCP connection if closing of a request fails */
     pthread_t w_thread;      /* Thread that is used to write the chunks */
     LIST_ENTRY(connection) entries;
@@ -79,8 +79,8 @@ typedef struct connection {
     chunk **chunks_ptr;     /* An array with pointers to chunks */
     int nr_of_chunks;       /* Nr of chunks available, guarded by chunks_mutex */
     int chunks_done;        /* Are all chunks for this request available in the buffer */
-    int cleanup_requested;  /* This conn should be deleted, can be caused by too many idle connections */
     int last_chunk_written; /* Last chunk number that has been written */
+    _Atomic bool cleanup_requested;  /* This conn should be deleted, can be caused by too many idle connections */
     buffer_data *mem;       /* Optional buffer to hold file content that will be written */
 } connection;
 
@@ -89,7 +89,7 @@ LIST_HEAD(connections_head, connection) connections = LIST_HEAD_INITIALIZER(conn
 
 static pthread_mutex_t connections_mutex = PTHREAD_MUTEX_INITIALIZER;
 const static int max_idle_connections = 15;
-static int nr_of_connections = 0;
+static _Atomic int nr_of_connections = 0;
 static int total_nr_of_connections = 0; /* nr of connections made in total */
 
 static stats *chunk_write_time_stats;
@@ -116,7 +116,7 @@ static void release_request(connection *conn) {
         av_dict_free(&conn->options);
         pthread_mutex_unlock(&conn->chunks_mutex);
     }
-    conn->claimed = 0;
+    conn->claimed = false;
     conn->release_time = release_time;
     conn->nr_of_chunks = 0;
     conn->chunks_done = 0;
@@ -174,10 +174,7 @@ static void write_chunk(connection *conn, int chunk_nr) {
     }
 
     print_complete_stats(chunk_write_time_stats, av_gettime() / 1000 - start_time_ms);
-    pthread_mutex_lock(&connections_mutex);
-    int conn_num = nr_of_connections;
-    pthread_mutex_unlock(&connections_mutex);
-    print_complete_stats(conn_count_stats, conn_num);
+    print_complete_stats(conn_count_stats, nr_of_connections);
 }
 
 static connection *get_conn(int conn_nr) {
@@ -508,7 +505,7 @@ static void free_idle_connections(int nr_of_idle_connections, int nr_of_connecti
 
         if (!conn->claimed) {
             //signal connection thread
-            conn->cleanup_requested = 1;
+            conn->cleanup_requested = true;
             pthread_mutex_lock(&conn->chunks_mutex);
             pthread_cond_signal(&conn->chunks_mutex_cv);
             pthread_mutex_unlock(&conn->chunks_mutex);
@@ -562,7 +559,7 @@ static connection *claim_connection(char *url, int need_new_connection) {
         conn->nr = conn_nr;
         conn->mem = NULL;
         conn->req_opened = false;
-        conn->cleanup_requested = 0;
+        conn->cleanup_requested = false;
         nr_of_connections++;
         total_nr_of_connections++;
         pthread_mutex_init(&conn->chunks_mutex, NULL);
@@ -590,7 +587,7 @@ static connection *claim_connection(char *url, int need_new_connection) {
     len = strlen(url) + 1;
     conn->url = malloc(len);
     av_strlcpy(conn->url, url, len);
-    conn->claimed = 1;
+    conn->claimed = true;
 
     if(conn_idle_count > max_idle_connections){
         free_idle_connections(conn_idle_count, max_idle_connections);
