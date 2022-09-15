@@ -65,7 +65,6 @@ typedef struct connection {
     pthread_t w_thread;      /* Thread that is used to write the chunks */
     LIST_ENTRY(connection) entries;
 
-    //Request data that is not cleaned between requests
     pthread_mutex_t chunks_mutex;
     pthread_cond_t chunks_mutex_cv;
     chunk **chunks_ptr;     /* An array with pointers to chunks */
@@ -88,6 +87,8 @@ typedef struct connection {
 LIST_HEAD(connections_head, connection) connections = LIST_HEAD_INITIALIZER(connections);
 
 static pthread_mutex_t connections_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t connections_thread_exit_cv = PTHREAD_COND_INITIALIZER;
+
 const static int max_idle_connections = 15;
 static _Atomic int nr_of_connections = 0;
 static int total_nr_of_connections = 0; /* nr of connections made in total */
@@ -132,6 +133,7 @@ static void abort_if_needed(int mustSucceed) {
     }
 }
 
+/* Expects chunks_mutex to be locked. */
 static void write_chunk(connection *conn, int chunk_nr) {
     int64_t start_time_ms;
     int64_t write_time_ms;
@@ -293,13 +295,10 @@ static void remove_from_list(connection *conn) {
 
 /**
  * Remove a connection from the list and free it's memory.
- * This method expects the connections_mutex to be active.
- * It also expects to be started from the connection thread.
+ * This method expects to be started from the connection thread.
  */
 static void connection_exit(connection *conn) {
-    pthread_mutex_lock(&connections_mutex);
-    remove_from_list(conn);
-    pthread_mutex_unlock(&connections_mutex);
+    av_log(conn->s, AV_LOG_INFO, "Removing conn %d\n", conn->nr);
 
     pthread_mutex_lock(&conn->open_mutex);
     conn->opened = false;
@@ -309,7 +308,12 @@ static void connection_exit(connection *conn) {
     pthread_mutex_destroy(&conn->open_mutex);
     pthread_mutex_destroy(&conn->chunks_mutex);
     pthread_cond_destroy(&conn->chunks_mutex_cv);
+
+    pthread_mutex_lock(&connections_mutex);
+    remove_from_list(conn);
     free(conn);
+    pthread_cond_signal(&connections_thread_exit_cv);
+    pthread_mutex_unlock(&connections_mutex);
     pthread_exit(NULL);
 }
 
@@ -445,11 +449,10 @@ static void *thr_io_write(void *arg) {
         pthread_mutex_lock(&conn->chunks_mutex);
         while (conn->last_chunk_written >= conn->nr_of_chunks && !conn->chunks_done) {
             pthread_cond_wait(&conn->chunks_mutex_cv, &conn->chunks_mutex);
-        }
-
-        if (conn->cleanup_requested) {
-            pthread_mutex_unlock(&conn->chunks_mutex);
-            connection_exit(conn);
+            if (conn->cleanup_requested) {
+                pthread_mutex_unlock(&conn->chunks_mutex);
+                connection_exit(conn);
+            }
         }
 
         open_request_if_needed(conn);
@@ -473,6 +476,16 @@ static void *thr_io_write(void *arg) {
     return NULL;
 }
 
+static void request_cleanup(connection *conn) {
+    av_log(conn->s, AV_LOG_INFO, "Request cleanup of conn %d\n", conn->nr);
+    conn->cleanup_requested = true;
+
+    //signal connection thread
+    pthread_mutex_lock(&conn->chunks_mutex);
+    pthread_cond_signal(&conn->chunks_mutex_cv);
+    pthread_mutex_unlock(&conn->chunks_mutex);
+}
+
 /**
  * Trigger deletion of idle connections.
  * Expects connections_mutex to be locked.
@@ -488,11 +501,7 @@ static void free_idle_connections(int nr_of_idle_connections, int nr_of_connecti
         }
 
         if (!conn->claimed) {
-            //signal connection thread
-            conn->cleanup_requested = true;
-            pthread_mutex_lock(&conn->chunks_mutex);
-            pthread_cond_signal(&conn->chunks_mutex_cv);
-            pthread_mutex_unlock(&conn->chunks_mutex);
+            request_cleanup(conn);
             nr_of_idle_connections--;
         }
     }
@@ -544,7 +553,18 @@ static connection *claim_connection(char *url, int need_new_connection) {
         pthread_mutex_init(&conn->chunks_mutex, NULL);
         pthread_cond_init(&conn->chunks_mutex_cv, NULL);
 
-        if(pthread_create(&conn->w_thread, NULL, thr_io_write, conn)) {
+        pthread_attr_t attr;
+        if (pthread_attr_init(&attr)) {
+            av_log(NULL, AV_LOG_ERROR, "Error creating thread attributes.\n");
+            abort();
+        }
+
+        if (pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED)) {
+            av_log(NULL, AV_LOG_ERROR, "Error setting thread attributes.\n");
+            abort();
+        }
+
+        if(pthread_create(&conn->w_thread, &attr, thr_io_write, conn)) {
             av_log(NULL, AV_LOG_ERROR, "Error creating thread so abort.\n");
             abort();
         }
@@ -662,64 +682,29 @@ void pool_io_close(AVFormatContext *s, char *filename, int conn_nr) {
     pool_conn_close(conn);
 }
 
-static void pool_free(AVFormatContext *s, connection *conn) {
-    av_log(NULL, AV_LOG_DEBUG, "pool_free conn_nr: %d\n", conn->nr);
-
-    pthread_mutex_lock(&conn->open_mutex);
-    conn->opened = false;
-    if (conn->out) {
-        ff_format_io_close(s, &conn->out);
-    }
-
-    pthread_mutex_unlock(&conn->open_mutex);
-    release_request(conn);
-}
-
 void pool_free_all(AVFormatContext *s) {
-    int ret = 0;
-    bool all_conns_done = false;
     connection *conn = NULL;
 
-    av_log(NULL, AV_LOG_INFO, "pool_free_all\n");
+    av_log(s, AV_LOG_INFO, "pool_free_all\n");
 
     // Signal the connections to close
     should_stop = true;
 
-    av_log(NULL, AV_LOG_INFO, "pool_free_all waiting for requests to finish\n");
-
     pthread_mutex_lock(&connections_mutex);
-
-    while (!all_conns_done) {
-        all_conns_done = true;
-        LIST_FOREACH(conn, &connections, entries) {
-            if (conn->claimed) {
-                all_conns_done = false;
-                break;
-            }
+    LIST_FOREACH(conn, &connections, entries) {
+        if (conn->claimed) {
+            pool_conn_close(conn);
+        } else {
+            request_cleanup(conn);
         }
-
-        if (all_conns_done) {
-            break;
-        }
-
-        pthread_t tid = conn->w_thread;
-        pool_conn_close(conn);
-
-        pthread_mutex_unlock(&connections_mutex);
-        ret = pthread_join(tid, NULL);
-        if (ret) {
-            av_log(NULL, AV_LOG_INFO, "Failed to join w_thread of connection %d: %d\n", conn->nr, ret);
-            abort();
-        }
-        pthread_mutex_lock(&connections_mutex);
     }
 
-    av_log(NULL, AV_LOG_INFO, "pool_free_all free memory\n");
-    LIST_FOREACH(conn, &connections, entries) {
-        //close conn->out
-        pool_free(s, conn);
+    while (!LIST_EMPTY(&connections)) {
+        pthread_cond_wait(&connections_thread_exit_cv, &connections_mutex);
     }
     pthread_mutex_unlock(&connections_mutex);
+
+    av_log(s, AV_LOG_INFO, "All requests are stopped\n");
 }
 
 
