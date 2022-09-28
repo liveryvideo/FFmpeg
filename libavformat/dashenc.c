@@ -214,6 +214,8 @@ typedef struct DASHContext {
     AVRational min_playback_rate;
     AVRational max_playback_rate;
     int64_t update_period;
+
+    int last_written_segment_index;
 } DASHContext;
 
 static struct codec_string {
@@ -1500,6 +1502,7 @@ static int dash_init(AVFormatContext *s)
 
     pool_init();
 
+    c->last_written_segment_index = -1;
     c->nr_of_streams_to_flush = 0;
     if (c->single_file_name)
         c->single_file = 1;
@@ -2514,7 +2517,10 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
         // before fully written but the manifest is needed so that
         // clients and discover the segment filenames.
         if (c->streaming) {
-            write_manifest(s, 0);
+            if (c->last_written_segment_index != os->segment_index) {
+                write_manifest(s, 0);
+                c->last_written_segment_index = os->segment_index;
+            }
         }
 
         if (c->lhls) {
