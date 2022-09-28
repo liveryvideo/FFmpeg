@@ -582,7 +582,7 @@ static connection *claim_connection(char *url, int need_new_connection) {
         conn->nr = conn_nr;
     }
 
-    av_log(NULL, AV_LOG_DEBUG, "Claimed conn_id: %d, url: %s\n", conn_nr, url);
+    av_log(NULL, AV_LOG_INFO, "Claimed conn_id: %d, url: %s\n", conn_nr, url);
     len = strlen(url) + 1;
     conn->url = malloc(len);
     av_strlcpy(conn->url, url, len);
