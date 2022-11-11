@@ -536,6 +536,8 @@ static int libsrt_open(URLContext *h, const char *uri, int flags)
         return AVERROR_UNKNOWN;
     }
 
+    av_log(s, AV_LOG_INFO, "libsrt_open url: %s\n", uri);
+
     /* SRT options (srt/srt.h) */
     p = strchr(uri, '?');
     if (p) {
