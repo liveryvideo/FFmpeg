@@ -1411,12 +1411,15 @@ static void bprint_escaped_path(AVBPrint *bp, const char *path)
 
 #define unlikely(x) __builtin_expect(!!(x),0)
 
-/* This might be updated by parsing nonceExpireTime from command json */
-int64_t nonce_expire_time = ((int64_t)60 * 60 - 3) * 1000000; /* 1 hour - 3 second by default.
+static int64_t nonce_expire_time = ((int64_t)60 * 60 - 3) * 1000000; /* 1 hour - 3 second by default.
                                                                  * We're doing that -3 since we don't
                                                                  * know exact nonce birth time, so we
                                                                  * start trying to acquire new one 3
                                                                  * seconds in advance */
+void set_nonce_expire_time(int64_t time)
+{
+    nonce_expire_time = time;
+}
 
 static void http_invalidate_auth(HTTPAuthState *s)
 {
