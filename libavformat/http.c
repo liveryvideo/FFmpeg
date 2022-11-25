@@ -1416,7 +1416,7 @@ static int64_t nonce_expire_time = ((int64_t)60 * 60 - 3) * 1000000; /* 1 hour -
                                                                  * know exact nonce birth time, so we
                                                                  * start trying to acquire new one 3
                                                                  * seconds in advance */
-void set_nonce_expire_time(int64_t time)
+void av_set_nonce_expire_time(int64_t time)
 {
     nonce_expire_time = time;
 }

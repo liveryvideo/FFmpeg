@@ -2901,6 +2901,12 @@ int avformat_transfer_internal_stream_timing_info(const AVOutputFormat *ofmt,
 AVRational av_stream_get_codec_timebase(const AVStream *st);
 
 /**
+ * Change nonce expire time
+ *
+ * @param time     new time to set nonce to
+ */
+void av_set_nonce_expire_time(int64_t time);
+/**
  * @}
  */
 
