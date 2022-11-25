@@ -66,4 +66,6 @@ char *ff_http_get_url(URLContext *h);
 
 int ff_http_get_code(URLContext *h);
 
+void set_nonce_expire_time(int64_t time);
+
 #endif /* AVFORMAT_HTTP_H */
