@@ -306,6 +306,8 @@ static void remove_from_list(connection *conn) {
  */
 static void connection_exit(connection *conn) {
     av_log(conn->s, AV_LOG_INFO, "Removing conn %d\n", conn->nr);
+    pthread_mutex_lock(&connections_mutex);
+    remove_from_list(conn);
 
     pthread_mutex_lock(&conn->open_mutex);
     conn->opened = false;
@@ -315,10 +317,8 @@ static void connection_exit(connection *conn) {
     pthread_mutex_destroy(&conn->open_mutex);
     pthread_mutex_destroy(&conn->chunks.mutex);
     pthread_cond_destroy(&conn->chunks.cv);
-
-    pthread_mutex_lock(&connections_mutex);
-    remove_from_list(conn);
     free(conn);
+
     pthread_cond_signal(&connections_thread_exit_cv);
     pthread_mutex_unlock(&connections_mutex);
     pthread_exit(NULL);
@@ -479,6 +479,9 @@ static void *thr_io_write(void *arg) {
 }
 
 static void request_cleanup(connection *conn) {
+    if (conn->cleanup_requested)
+        return;
+
     av_log(conn->s, AV_LOG_INFO, "Request cleanup of conn %d\n", conn->nr);
     conn->cleanup_requested = true;
 
