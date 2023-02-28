@@ -210,8 +210,8 @@ static connection *get_conn(int conn_nr) {
 
 // Open connection if not open and start doing the request
 static int io_open_for_retry(connection *conn) {
-    URLContext *http_url_context;
-    int ret;
+    int ret = 0;
+    URLContext *http_url_context = NULL;
     AVFormatContext *s = conn->s;
 
     pthread_mutex_lock(&conn->open_mutex);
@@ -221,29 +221,38 @@ static int io_open_for_retry(connection *conn) {
         ret = s->io_open(s, &(conn->out), conn->url, AVIO_FLAG_WRITE, &conn->options);
         if (ret < 0) {
             av_log(s, AV_LOG_WARNING, "io_open_for_retry %d could not open url: %s\n", conn->retry_nr, conn->url);
-            conn->open_error = true;
-        } else {
-            conn->opened = true;
+            goto error;
         }
 
+        conn->opened = true;
         pthread_mutex_unlock(&conn->open_mutex);
         return ret;
     }
     pthread_mutex_unlock(&conn->open_mutex);
 
     http_url_context = ffio_geturlcontext(conn->out);
-    av_assert0(http_url_context);
+    if (http_url_context == NULL) {
+        av_log(s, AV_LOG_WARNING, "Failed to get url context");
+        goto error_close;
+    }
 
     ret = ff_http_do_new_request(http_url_context, conn->url);
     if (ret != 0) {
-        int64_t curr_time_ms = av_gettime() / 1000;
-        int64_t idle_tims_ms = curr_time_ms - conn->release_time;
+        const int64_t curr_time_ms = av_gettime() / 1000;
+        const int64_t idle_tims_ms = curr_time_ms - conn->release_time;
         av_log(s, AV_LOG_WARNING, "io_open_for_retry error conn_nr: %d, idle_time: %"PRId64", error: %d, retry_nr: %d, url: %s\n", conn->nr, idle_tims_ms, ret, conn->retry_nr, conn->url);
-        pthread_mutex_lock(&conn->open_mutex);
-        conn->open_error = true;
-        ff_format_io_close(s, &conn->out);
-        pthread_mutex_unlock(&conn->open_mutex);
+        goto error_close;
     }
+
+    return ret;
+
+error_close:
+    pthread_mutex_lock(&conn->open_mutex);
+    ff_format_io_close(s, &conn->out);
+
+error:
+    conn->open_error = true;
+    pthread_mutex_unlock(&conn->open_mutex);
     return ret;
 }
 
@@ -341,13 +350,17 @@ static void *thr_io_close(connection *conn) {
         response_code = 0;
     } else {
         URLContext *http_url_context = ffio_geturlcontext(conn->out);
-        av_assert0(http_url_context);
-        avio_flush(conn->out);
-
-        //av_log(NULL, AV_LOG_INFO, "thr_io_close conn_nr: %d, out_addr: %p \n", conn->nr, conn->out);
-
-        ret = ffurl_shutdown(http_url_context, AVIO_FLAG_WRITE);
-        response_code = ff_http_get_code(http_url_context);
+        if (http_url_context == NULL) {
+            pthread_mutex_lock(&conn->open_mutex);
+            conn->open_error = true;
+            pthread_mutex_unlock(&conn->open_mutex);
+            ret = -1;
+            response_code = 0;
+        } else {
+            avio_flush(conn->out);
+            ret = ffurl_shutdown(http_url_context, AVIO_FLAG_WRITE);
+            response_code = ff_http_get_code(http_url_context);
+        }
     }
 
     if (ret < 0 || response_code >= 500) {
@@ -398,13 +411,7 @@ static int open_request_if_needed(connection *conn) {
         ret = conn->s->io_open(conn->s, &(conn->out), conn->url, AVIO_FLAG_WRITE, &conn->options);
         if (ret < 0) {
             av_log(conn->s, AV_LOG_WARNING, "Could not open %s\n", conn->url);
-            abort_if_needed(conn->must_succeed);
-            conn->open_error = true;
-            pthread_mutex_unlock(&conn->open_mutex);
-            if (!conn->retry) {
-                return ret;
-            }
-            return conn->nr;
+            goto error;
         }
 
         conn->req_opened = true;
@@ -415,32 +422,38 @@ static int open_request_if_needed(connection *conn) {
     pthread_mutex_unlock(&conn->open_mutex);
 
     http_url_context = ffio_geturlcontext(conn->out);
-    av_assert0(http_url_context);
+    if (http_url_context == NULL) {
+        av_log(conn->s, AV_LOG_WARNING, "Could not get http_url_context!\n");
+        goto error_close;
+    }
 
     av_log(conn->s, AV_LOG_INFO, "Connection(%d)\n", conn->nr);
     av_log(conn->s, AV_LOG_INFO, "Connection(%d) start req on existing connection %s\n", conn->nr, conn->url);
 
     ret = ff_http_do_new_request(http_url_context, conn->url);
     if (ret != 0) {
-        int64_t curr_time_ms = av_gettime() / 1000;
-        int64_t idle_tims_ms = curr_time_ms - conn->release_time;
+        const int64_t curr_time_ms = av_gettime() / 1000;
+        const int64_t idle_tims_ms = curr_time_ms - conn->release_time;
         av_log(conn->s, AV_LOG_WARNING, "pool_io_open error conn_nr: %d, idle_time: %"PRId64", error: %d, name: %s\n", conn->nr, idle_tims_ms, ret, conn->url);
-
-        pthread_mutex_lock(&conn->open_mutex);
-        conn->open_error = true;
-        ff_format_io_close(conn->s, &conn->out);
-        abort_if_needed(conn->must_succeed);
-        pthread_mutex_unlock(&conn->open_mutex);
-
-        if (!conn->retry) {
-            return ret;
-        }
-        return conn->nr;
+        goto error_close;
     }
 
     pthread_mutex_lock(&conn->open_mutex);
     conn->req_opened = true;
     pthread_mutex_unlock(&conn->open_mutex);
+    return conn->nr;
+
+error_close:
+    pthread_mutex_lock(&conn->open_mutex);
+    ff_format_io_close(conn->s, &conn->out);
+error:
+    abort_if_needed(conn->must_succeed);
+    conn->open_error = true;
+    pthread_mutex_unlock(&conn->open_mutex);
+    if (!conn->retry) {
+        return ret;
+    }
+
     return conn->nr;
 }
 
