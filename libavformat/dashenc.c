@@ -200,7 +200,11 @@ typedef struct DASHContext {
     int new_seg_on_keyframe;
     int first_mpd_written; /* used to log some details the first time the mpd is written */
     stats *audio_time_stats;
+    stats *audio_dash_time_stats;
+    stats *audio_chained_time_stats;
     stats *video_time_stats;
+    stats *video_dash_time_stats;
+    stats *video_chained_time_stats;
     stats *seg_start_deviation_stats;
     int64_t suggested_presentation_delay;
 
@@ -692,7 +696,11 @@ static void dash_free(AVFormatContext *s)
         free_stats(os->bitrate_stats);
     }
     free_stats(c->audio_time_stats);
+    free_stats(c->audio_dash_time_stats);
+    free_stats(c->audio_chained_time_stats);
     free_stats(c->video_time_stats);
+    free_stats(c->video_dash_time_stats);
+    free_stats(c->video_chained_time_stats);
     free_stats(c->seg_start_deviation_stats);
     av_freep(&c->streams);
 
@@ -1859,7 +1867,11 @@ static int dash_init(AVFormatContext *s)
     c->target_latency_refid = -1;
 
     c->audio_time_stats = init_stats("audio_processing", 5 * 1000000);
+    c->audio_dash_time_stats = init_stats("audio_dash_time", 5 * 1000000);
+    c->audio_chained_time_stats = init_stats("audio_chained_time", 5 * 1000000);
     c->video_time_stats = init_stats("video_processing", 5 * 1000000);
+    c->video_dash_time_stats = init_stats("video_dash_time", 5 * 1000000);
+    c->video_chained_time_stats = init_stats("video_chained_time", 5 * 1000000);
     c->seg_start_deviation_stats = init_stats("seg_start_deviation", 5 * 1000000);
 
     return 0;
@@ -2280,8 +2292,9 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
     AVStream *st = s->streams[pkt->stream_index];
     OutputStream *os = &c->streams[pkt->stream_index];
     AdaptationSet *as = &c->as[os->as_idx - 1];
-    int64_t seg_end_duration, elapsed_duration;
+    int64_t seg_end_duration, elapsed_duration, chained_start_time;
     int ret;
+    const int64_t dash_start_time = av_gettime_relative();
 
     ret = update_stream_extradata(s, os, pkt, &st->avg_frame_rate);
     if (ret < 0)
@@ -2473,8 +2486,17 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
         c->max_gop_size = FFMAX(c->max_gop_size, os->gop_size);
     }
 
+    chained_start_time = av_gettime_relative();
     if ((ret = ff_write_chained(os->ctx, 0, pkt, s, 0)) < 0)
         return ret;
+
+    if (c->streaming && os->segment_type == SEGMENT_TYPE_MP4) {
+        if (os->ctx->streams[0]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            print_complete_stats(c->video_chained_time_stats, (av_gettime_relative() - chained_start_time) / 1000);
+        } else {
+            print_complete_stats(c->audio_chained_time_stats, (av_gettime_relative() - chained_start_time) / 1000);
+        }
+    }
 
     os->packets_written++;
     os->total_pkt_size += pkt->size;
@@ -2566,6 +2588,12 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
         }
 
         os->written_len = len;
+
+        if (os->ctx->streams[0]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            print_complete_stats(c->video_dash_time_stats, (av_gettime_relative() - dash_start_time) / 1000);
+        } else {
+            print_complete_stats(c->audio_dash_time_stats, (av_gettime_relative() - dash_start_time) / 1000);
+        }
     }
 
     return ret;
