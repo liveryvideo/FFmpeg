@@ -34,12 +34,13 @@ void print_complete_stats(stats *stats, int64_t value)
         stats->lastLog = curr_time;
         avgValue = stats->totalValue / stats->nrOfSamples;
 
-        av_log(NULL, AV_LOG_INFO, "complete_stats name: %s, min: %"PRId64", max: %"PRId64", avg: %"PRId64", time: %"PRId64"\n",
+        av_log(NULL, AV_LOG_INFO, "complete_stats name: %s, min: %"PRId64", max: %"PRId64", avg: %"PRId64", time: %"PRId64", stats_recorded: %"PRId64"\n",
             stats->name,
             stats->minValue,
             stats->maxValue,
             avgValue,
-            curr_time);
+            curr_time,
+            stats->nrOfSamples);
 
         stats->minValue = 0;
         stats->maxValue = 0;
