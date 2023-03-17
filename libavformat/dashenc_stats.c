@@ -90,6 +90,10 @@ stats *init_stats(const char *name, int logInterval)
 
 void free_stats(stats *stats)
 {
+    if (!stats) {
+        return;
+    }
+
     pthread_mutex_destroy(&stats->stats_lock);
     free(stats);
 }
