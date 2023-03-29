@@ -2096,6 +2096,8 @@ static int dash_flush(AVFormatContext *s, int final, int stream)
                 continue;
         }
 
+        av_log(s, AV_LOG_INFO, "segment_duration_stats: rep_%d_bitrate_%d, value: %" PRId64 "\n", i, os->bit_rate, os->last_duration);
+
         if (c->single_file)
             snprintf(os->full_path, sizeof(os->full_path), "%s%s", c->dirname, os->initfile);
 
@@ -2377,13 +2379,6 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
     } else {
         elapsed_duration = pkt->pts - os->start_pts;
         seg_end_duration = os->seg_duration;
-    }
-
-
-    if (pkt->flags & AV_PKT_FLAG_KEY && os->packets_written &&
-        av_compare_ts(elapsed_duration, st->time_base,
-                      seg_end_duration, AV_TIME_BASE_Q) >= 0) {
-        av_log(s, AV_LOG_INFO, "segment_duration_stats: rep_%d_bitrate_%d, value: %" PRId64 "\n", pkt->stream_index, os->bit_rate, os->last_duration);
     }
 
     if (os->parser &&
