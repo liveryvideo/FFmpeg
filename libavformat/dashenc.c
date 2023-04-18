@@ -2394,6 +2394,16 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
         os->coding_dependency |= os->parser->pict_type != AV_PICTURE_TYPE_I;
     }
 
+    if (pkt->flags & AV_PKT_FLAG_KEY && st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+        av_log(s, AV_LOG_INFO, "-----------------Key frame2, pts: %" PRId64 ", packets_written: %d, cond: %d\n", pkt->pts, os->packets_written, (c->new_seg_on_keyframe || av_compare_ts(elapsed_duration, st->time_base, seg_end_duration, AV_TIME_BASE_Q) >= 0));
+    }
+
+    if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+        av_log(s, AV_LOG_INFO, "-----------------Audio frame, pts: %" PRId64 ", dts: %" PRId64 " start_pts: %" PRId64 " max_pts: %" PRId64" timebase: %d/%d\n", pkt->pts, pkt->dts, os->start_pts, os->max_pts, st->time_base.num, st->time_base.den);
+    } else {
+        av_log(s, AV_LOG_INFO, "-----------------Video frame, pts: %" PRId64 ", dts: %" PRId64 " start_pts: %" PRId64 " max_pts: %" PRId64" timebase: %d/%d\n", pkt->pts, pkt->dts, os->start_pts, os->max_pts, st->time_base.num, st->time_base.den);
+    }
+
     if (pkt->flags & AV_PKT_FLAG_KEY && os->packets_written && st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
        (c->new_seg_on_keyframe || av_compare_ts(elapsed_duration, st->time_base, seg_end_duration, AV_TIME_BASE_Q) >= 0)) {
         if (!c->has_video || st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
