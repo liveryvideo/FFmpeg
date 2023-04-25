@@ -470,7 +470,7 @@ static void *thr_io_write(void *arg) {
         pthread_mutex_lock(&conn->chunks.mutex);
         while (!chunk_is_available(&conn->chunks) && !conn->chunks_done) {
             pthread_cond_wait(&conn->chunks.cv, &conn->chunks.mutex);
-            if (conn->cleanup_requested) {
+            if (conn->cleanup_requested || should_stop) {
                 pthread_mutex_unlock(&conn->chunks.mutex);
                 connection_exit(conn);
             }
