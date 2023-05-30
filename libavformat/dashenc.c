@@ -201,7 +201,7 @@ typedef struct DASHContext {
     int first_mpd_written; /* used to log some details the first time the mpd is written */
     stats *audio_time_stats;
     stats *video_time_stats;
-    stats *seg_start_deviation_stats;
+    stats **seg_start_deviation_stats;
     int64_t suggested_presentation_delay;
 
     int frag_type;
@@ -690,15 +690,16 @@ static void dash_free(AVFormatContext *s)
         av_freep(&os->init_seg_name);
         av_freep(&os->media_seg_name);
         free_stats(os->bitrate_stats);
+        free_stats(c->seg_start_deviation_stats[i]);
     }
     free_stats(c->audio_time_stats);
     free_stats(c->video_time_stats);
-    free_stats(c->seg_start_deviation_stats);
     av_freep(&c->streams);
 
     //ff_format_io_close(s, &c->mpd_out);
     //ff_format_io_close(s, &c->m3u8_out);
     pool_free_all(s);
+    av_free(c->seg_start_deviation_stats);
 }
 
 static void output_segment_list(OutputStream *os, AVIOContext *out, AVFormatContext *s,
@@ -1846,6 +1847,22 @@ static int dash_init(AVFormatContext *s)
 
         if (s->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
             c->nr_of_streams_to_flush++;
+
+        char *name = av_asprintf("seg_start_deviation_stream%d", i);
+        if (name == NULL) {
+            av_log(s, AV_LOG_ERROR, "Failed to allocate memory for seg_start_deviation_stream%d string\n", i);
+            return AVERROR(ENOMEM);
+        }
+
+        stats *stat = init_stats(name, 5 * 1000000);
+        if (stat == NULL) {
+            av_log(s, AV_LOG_ERROR, "Failed to allocate memory for stat\n");
+            return AVERROR(ENOMEM);
+        }
+
+        int size = i;
+        av_dynarray_add(&c->seg_start_deviation_stats, &size, stat);
+        av_free(name);
     }
 
     if (!c->has_video && c->seg_duration <= 0) {
@@ -1860,7 +1877,6 @@ static int dash_init(AVFormatContext *s)
 
     c->audio_time_stats = init_stats("audio_processing", 5 * 1000000);
     c->video_time_stats = init_stats("video_processing", 5 * 1000000);
-    c->seg_start_deviation_stats = init_stats("seg_start_deviation", 5 * 1000000);
 
     return 0;
 }
@@ -2142,7 +2158,7 @@ static int dash_flush(AVFormatContext *s, int final, int stream)
         int64_t curr_time = av_gettime();
         int64_t deviation = (curr_time - (c->availability_start_time_us + (os->segment_index - 1) * duration)) / 1000;
 
-        print_complete_stats(c->seg_start_deviation_stats, deviation);
+        print_complete_stats(c->seg_start_deviation_stats[i], deviation);
     }
 
     if (c->window_size) {

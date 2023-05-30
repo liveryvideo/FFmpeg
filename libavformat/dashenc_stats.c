@@ -81,7 +81,7 @@ void print_total_stats(stats *stats, int64_t value)
 
 stats *init_stats(const char *name, int logInterval)
 {
-    stats *stats = calloc(1, sizeof(struct stats));
+    stats *stats = av_mallocz(sizeof(struct stats));
     stats->logInterval = logInterval;
     av_strlcpy(stats->name, name, sizeof(stats->name));
     pthread_mutex_init(&stats->stats_lock, NULL);
@@ -95,5 +95,5 @@ void free_stats(stats *stats)
     }
 
     pthread_mutex_destroy(&stats->stats_lock);
-    free(stats);
+    av_free(stats);
 }
