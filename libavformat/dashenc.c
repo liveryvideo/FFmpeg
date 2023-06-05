@@ -2212,25 +2212,23 @@ static int dash_flush(AVFormatContext *s, int final, int stream)
 /**
  * Return the timestamp (in microseconds) that was added when the frame has entered FFmpeg.
  */
-static int64_t get_init_time(AVPacket *pkt) {
-    size_t size;
-    const uint8_t *side_data;
-    AVDictionary *dict;
-    AVDictionaryEntry* timeEntry;
+static int64_t get_init_time(const AVPacket *pkt) {
+    size_t size = 0;
+    AVDictionary *dict = NULL;
+    AVDictionaryEntry* timeEntry = NULL;
 
-    side_data = av_packet_get_side_data(pkt, AV_PKT_DATA_STRINGS_METADATA, &size);
+    const uint8_t *side_data = av_packet_get_side_data(pkt, AV_PKT_DATA_STRINGS_METADATA, &size);
     if (!side_data || !size) {
         return -1;
     }
 
-    dict = NULL;
     if (av_packet_unpack_dictionary(side_data, size, &dict) < 0) {
         return -2;
     }
 
     timeEntry = av_dict_get(dict, "init_time", NULL, 0);
     if (timeEntry) {
-        long init_time = strtol(timeEntry->value, NULL, 10);
+        const int64_t init_time = (int64_t)strtol(timeEntry->value, NULL, 10);
         av_dict_free(&dict);
         return init_time;
     }
@@ -2243,15 +2241,13 @@ static int64_t get_init_time(AVPacket *pkt) {
  * Print statistics to the log.
  * LLS-79
  */
-static void print_stats(DASHContext *c, OutputStream *os, AVPacket *pkt)
+static void print_stats(DASHContext *c, OutputStream *os, const AVPacket *pkt)
 {
-    int64_t curr_time;
-    int64_t pTime;
-    int64_t pkt_init_time = get_init_time(pkt);
+    const int64_t pkt_init_time = get_init_time(pkt);
     if (pkt_init_time >= 0) {
         //av_gettime_relative is in microseconds
-        curr_time = av_gettime_relative();
-        pTime = (curr_time - pkt_init_time) / 1000;
+        const int64_t curr_time = av_gettime_relative();
+        const int64_t pTime = (curr_time - pkt_init_time) / 1000;
 
         if (os->ctx->streams[0]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             print_complete_stats(c->video_time_stats, pTime);
