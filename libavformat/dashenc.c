@@ -2216,32 +2216,48 @@ static int dash_flush(AVFormatContext *s, int final, int stream)
     return ret;
 }
 
+static const char *get_flow_string(const int64_t value) {
+    return value == LONG_MAX ? "Overflow" : "Underflow";
+}
+
 /**
  * Return the timestamp (in microseconds) that was added when the frame has entered FFmpeg.
  */
-static int64_t get_init_time(const AVPacket *pkt) {
+static int64_t get_init_time(AVFormatContext *s, const AVPacket *pkt) {
     size_t size = 0;
     AVDictionary *dict = NULL;
     AVDictionaryEntry* timeEntry = NULL;
+    int ret = 0;
 
     const uint8_t *side_data = av_packet_get_side_data(pkt, AV_PKT_DATA_STRINGS_METADATA, &size);
     if (!side_data || !size) {
-        return -1;
+        av_log(s, AV_LOG_ERROR, "Packet doesn't contain AV_PKT_DATA_STRINGS_METADATA, pts: %ld", pkt->pts);
+        return AVERROR(ENOENT);
     }
 
-    if (av_packet_unpack_dictionary(side_data, size, &dict) < 0) {
-        return -2;
+    ret = av_packet_unpack_dictionary(side_data, size, &dict);
+    if (ret < 0) {
+        av_log(s, AV_LOG_ERROR, "Failed to unpack side_data dictionary, packet pts: %ld", pkt->pts);
+        return ret;
     }
 
-    timeEntry = av_dict_get(dict, "init_time", NULL, 0);
+    const char key[] = "init_time";
+    timeEntry = av_dict_get(dict, key, NULL, 0);
     if (timeEntry) {
-        const int64_t init_time = (int64_t)strtol(timeEntry->value, NULL, 10);
+        errno = 0;
+        const int64_t init_time = strtoll(timeEntry->value, NULL, 10);
         av_dict_free(&dict);
+        if ((init_time == LONG_MAX || init_time == LONG_MIN) && errno == ERANGE) {
+            av_log(s, AV_LOG_ERROR, "%s during extracting %s from the packet with pts %ld, sd value: %s", get_flow_string(init_time), key, pkt->pts, timeEntry->value);
+            return AVERROR(ERANGE);
+        }
+
         return init_time;
     }
 
     av_dict_free(&dict);
-    return -3;
+    av_log(s, AV_LOG_ERROR, "Failed to find %s, packet pts: %ld", key, pkt->pts);
+    return AVERROR(ENOENT);
 }
 
 /**
@@ -2250,7 +2266,7 @@ static int64_t get_init_time(const AVPacket *pkt) {
  */
 static void print_stats(DASHContext *c, OutputStream *os, const AVPacket *pkt)
 {
-    const int64_t pkt_init_time = get_init_time(pkt);
+    const int64_t pkt_init_time = get_init_time(c, pkt);
     if (pkt_init_time >= 0) {
         //av_gettime_relative is in microseconds
         const int64_t curr_time = av_gettime_relative();
@@ -2348,9 +2364,12 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
         c->start_time_s = curr_time / 1000000;
 
         av_log(s, AV_LOG_INFO, "----------------------------------------\n");
-        rel_init_time = get_init_time(pkt);
-        if (rel_init_time <= 0) {
+        rel_init_time = get_init_time(s, pkt);
+        if (rel_init_time == 0) {
             av_log(s, AV_LOG_INFO, "Init time of pkt = 0, codec: %s. So skip optimising availabilityStartTime.\n", os->codec_str);
+            c->availability_start_time_us = curr_time;
+        } else if (rel_init_time < 0) {
+            av_log(c, AV_LOG_INFO, "missing packet time ret: %"PRId64", codec: %s\n", rel_init_time, os->codec_str);
             c->availability_start_time_us = curr_time;
         } else {
             int64_t rel_time = av_gettime_relative();
