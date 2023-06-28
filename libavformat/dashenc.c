@@ -2409,6 +2409,14 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
     if (pkt->flags & AV_PKT_FLAG_KEY && os->packets_written && st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
        (c->new_seg_on_keyframe || av_compare_ts(elapsed_duration, st->time_base, seg_end_duration, AV_TIME_BASE_Q) >= 0)) {
         if (!c->has_video || st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            int64_t curr_time = av_gettime();
+            if (curr_time - c->availability_start_time_us < 3 * os->seg_duration) {
+                c->availability_start_time_us = curr_time - (os->segment_index - 1) * os->seg_duration;
+                format_date(c->availability_start_time,
+                        sizeof(c->availability_start_time),
+                        c->availability_start_time_us);
+                av_log(s, AV_LOG_INFO, "newAvailabilityStartTime=\"%s\"\n", c->availability_start_time);
+            }
 
             av_log(s, AV_LOG_INFO, "-----------------Key frame, pts: %" PRId64 ", c->has_video: %d, isvideo:%d, new_seg_on_keyframe: %d\n", pkt->pts, c->has_video, st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO, c->new_seg_on_keyframe);
             c->last_duration = av_rescale_q(pkt->pts - os->start_pts,
