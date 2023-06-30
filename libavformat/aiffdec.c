@@ -164,6 +164,7 @@ static int get_aiff_header(AVFormatContext *s, int64_t size,
         case AV_CODEC_ID_ADPCM_IMA_WS:
         case AV_CODEC_ID_ADPCM_G722:
         case AV_CODEC_ID_MACE6:
+        case AV_CODEC_ID_CBD2_DPCM:
         case AV_CODEC_ID_SDX2_DPCM:
             par->block_align = 1 * channels;
             break;
@@ -372,6 +373,8 @@ got_sound:
         av_log(s, AV_LOG_ERROR, "could not find COMM tag or invalid block_align value\n");
         return AVERROR_INVALIDDATA;
     }
+    if (aiff->block_duration < 0)
+        return AVERROR_INVALIDDATA;
 
     /* Now positioned, get the sound data start and end */
     avpriv_set_pts_info(st, 64, 1, st->codecpar->sample_rate);
@@ -426,7 +429,7 @@ static int aiff_read_packet(AVFormatContext *s,
         pkt->flags &= ~AV_PKT_FLAG_CORRUPT;
     /* Only one stream in an AIFF file */
     pkt->stream_index = 0;
-    pkt->duration     = (res / st->codecpar->block_align) * aiff->block_duration;
+    pkt->duration     = (res / st->codecpar->block_align) * (int64_t) aiff->block_duration;
     return 0;
 }
 
