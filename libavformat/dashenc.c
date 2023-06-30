@@ -263,6 +263,7 @@ static int dashenc_io_open(AVFormatContext *s, AVIOContext **pb, char *filename,
     return err;
 }
 
+/* Still being used by deleting of old files */
 static void dashenc_io_close(AVFormatContext *s, AVIOContext **pb, char *filename) {
     DASHContext *c = s->priv_data;
     int http_base_proto = filename ? ff_is_http_proto(filename) : 0;
