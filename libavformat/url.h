@@ -39,6 +39,8 @@ typedef struct URLContext {
     const struct URLProtocol *prot;
     void *priv_data;
     char *filename;             /**< specified URL */
+    char *incoming_address;     /**< address from which connection was established */
+    char *incoming_filename;    /**< filename part of the URL to which incoming connection was established */
     int flags;
     int max_packet_size;        /**< if non zero, the stream is packetized with this max packet size */
     int is_streamed;            /**< true if streamed (no seek possible), default = false */

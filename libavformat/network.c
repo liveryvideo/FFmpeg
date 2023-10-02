@@ -27,6 +27,7 @@
 #include "libavutil/avassert.h"
 #include "libavutil/mem.h"
 #include "libavutil/time.h"
+#include "libavutil/avstring.h"
 
 int ff_tls_init(void)
 {
@@ -234,9 +235,12 @@ int ff_accept(int fd, int timeout, URLContext *h)
     if (ret < 0)
         return ret;
 
-    ret = accept(fd, NULL, NULL);
+    struct sockaddr_in client_addr;
+    socklen_t addrlen = sizeof(client_addr);
+    ret = accept(fd, (struct sockaddr *)&client_addr, &addrlen);
     if (ret < 0)
         return ff_neterrno();
+    h->incoming_address = av_asprintf("%s:%d", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
     if (ff_socket_nonblock(ret, 1) < 0)
         av_log(h, AV_LOG_DEBUG, "ff_socket_nonblock failed\n");
 

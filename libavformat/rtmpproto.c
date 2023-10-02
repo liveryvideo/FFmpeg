@@ -1949,6 +1949,9 @@ static int send_invoke_response(URLContext *s, RTMPPacket *pkt)
             if (strcmp(pchar, filename))
                 av_log(s, AV_LOG_WARNING, "Unexpected stream %s, expecting"
                        " %s\n", filename, pchar);
+
+            if (s->incoming_filename == NULL)
+                s->incoming_filename = av_strdup(filename);
         }
         rt->state = STATE_RECEIVING;
     }
@@ -2669,6 +2672,9 @@ reconnect:
         av_log(s , AV_LOG_ERROR, "Cannot open connection %s\n", buf);
         goto fail;
     }
+
+    if (rt->stream->incoming_address != NULL)
+        s->incoming_address = strdup(rt->stream->incoming_address);
 
     if (rt->swfverify) {
         if ((ret = rtmp_calc_swfhash(s)) < 0)

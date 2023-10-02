@@ -459,6 +459,8 @@ int ffurl_closep(URLContext **hh)
         av_freep(&h->priv_data);
     }
     av_opt_free(h);
+    av_free(h->incoming_filename);
+    av_free(h->incoming_address);
     av_freep(hh);
     return ret;
 }
