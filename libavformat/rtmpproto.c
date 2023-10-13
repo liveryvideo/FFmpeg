@@ -480,9 +480,11 @@ static int read_connect(URLContext *s, RTMPContext *rt)
                                  "app", tmpstr, sizeof(tmpstr));
     if (ret)
         av_log(s, AV_LOG_WARNING, "App field not found in connect\n");
-    if (!ret && strcmp(tmpstr, rt->app))
+    if (!ret && strcmp(tmpstr, rt->app)) {
         av_log(s, AV_LOG_WARNING, "App field don't match up: %s <-> %s\n",
                tmpstr, rt->app);
+        strncpy(rt->app, tmpstr, APP_MAX_LENGTH);
+    }
     ff_rtmp_packet_destroy(&pkt);
 
     // Send Window Acknowledgement Size (as defined in specification)
@@ -1898,6 +1900,11 @@ static int write_status(URLContext *s, RTMPPacket *pkt,
     return ret;
 }
 
+static char *extract_incoming_filename(URLContext *s, const char *filename) {
+    const RTMPContext *rt = s->priv_data;
+    return av_asprintf("%s/%s", rt->app,filename);
+}
+
 static int send_invoke_response(URLContext *s, RTMPPacket *pkt)
 {
     RTMPContext *rt = s->priv_data;
@@ -1951,7 +1958,7 @@ static int send_invoke_response(URLContext *s, RTMPPacket *pkt)
                        " %s\n", filename, pchar);
 
             if (s->incoming_filename == NULL)
-                s->incoming_filename = av_strdup(filename);
+                s->incoming_filename = extract_incoming_filename(s, filename);
         }
         rt->state = STATE_RECEIVING;
     }

@@ -226,6 +226,11 @@ int ff_listen(int fd, const struct sockaddr *addr,
     return ret;
 }
 
+static char *get_ip(const struct sockaddr_in *sa) {
+    static char ip[INET6_ADDRSTRLEN];
+    return inet_ntop(sa->sin_family, &(sa->sin_addr), ip, sizeof(ip) - 1);
+}
+
 int ff_accept(int fd, int timeout, URLContext *h)
 {
     int ret;
@@ -240,7 +245,7 @@ int ff_accept(int fd, int timeout, URLContext *h)
     ret = accept(fd, (struct sockaddr *)&client_addr, &addrlen);
     if (ret < 0)
         return ff_neterrno();
-    h->incoming_address = av_asprintf("%s:%d", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+    h->incoming_address = av_asprintf("%s:%d", get_ip(&client_addr), ntohs(client_addr.sin_port));
     if (ff_socket_nonblock(ret, 1) < 0)
         av_log(h, AV_LOG_DEBUG, "ff_socket_nonblock failed\n");
 
