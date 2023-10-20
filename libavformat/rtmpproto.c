@@ -2676,7 +2676,7 @@ reconnect:
     if ((ret = ffurl_open_whitelist(&rt->stream, buf, AVIO_FLAG_READ_WRITE,
                                     &s->interrupt_callback, opts,
                                     s->protocol_whitelist, s->protocol_blacklist, s)) < 0) {
-        if (ret != -EADDRINUSE) {
+        if (ret != -EADDRINUSE && ret != -ETIMEDOUT) {
             av_log(s , AV_LOG_ERROR, "Cannot open connection %s\n", buf);
         }
         goto fail;
