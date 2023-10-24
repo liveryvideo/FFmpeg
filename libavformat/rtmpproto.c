@@ -124,6 +124,7 @@ typedef struct RTMPContext {
     int           tracked_methods_size;       ///< size of the tracked methods buffer
     int           listen;                     ///< listen mode flag
     int           listen_timeout;             ///< listen timeout to wait for new connections
+    int           rw_timeout;                 ///< listen timeout to wait for new packets
     int           nb_streamid;                ///< The next stream id to return on createStream calls
     double        duration;                   ///< Duration of the stream in seconds as returned by the server (only valid if non-zero)
     int           tcp_nodelay;                ///< Use TCP_NODELAY to disable Nagle's algorithm if set to 1
@@ -2610,7 +2611,7 @@ static int rtmp_open(URLContext *s, const char *uri, int flags, AVDictionary **o
     int port;
     int ret;
 
-    if (rt->listen_timeout > 0)
+    if (rt->listen_timeout > 0 || rt->rw_timeout > 0)
         rt->listen = 1;
 
     rt->is_input = !(flags & AVIO_FLAG_WRITE);
@@ -2666,8 +2667,8 @@ static int rtmp_open(URLContext *s, const char *uri, int flags, AVDictionary **o
             port = RTMP_DEFAULT_PORT;
         if (rt->listen)
             ff_url_join(buf, sizeof(buf), "tcp", NULL, hostname, port,
-                        "?listen&listen_timeout=%d&tcp_nodelay=%d",
-                        rt->listen_timeout * 1000, rt->tcp_nodelay);
+                        "?listen&listen_timeout=%d&timeout=%d&tcp_nodelay=%d",
+                        rt->listen_timeout * 1000, rt->rw_timeout * 1000, rt->tcp_nodelay);
         else
             ff_url_join(buf, sizeof(buf), "tcp", NULL, hostname, port, "?tcp_nodelay=%d", rt->tcp_nodelay);
     }
@@ -2676,7 +2677,7 @@ reconnect:
     if ((ret = ffurl_open_whitelist(&rt->stream, buf, AVIO_FLAG_READ_WRITE,
                                     &s->interrupt_callback, opts,
                                     s->protocol_whitelist, s->protocol_blacklist, s)) < 0) {
-        if (ret != -EADDRINUSE) {
+        if (ret != -EADDRINUSE && ret != -ETIMEDOUT) {
             av_log(s , AV_LOG_ERROR, "Cannot open connection %s\n", buf);
         }
         goto fail;
@@ -3135,6 +3136,7 @@ static const AVOption rtmp_options[] = {
     {"listen",      "Listen for incoming rtmp connections", OFFSET(listen), AV_OPT_TYPE_INT, {.i64 = 0}, INT_MIN, INT_MAX, DEC, "rtmp_listen" },
     {"tcp_nodelay", "Use TCP_NODELAY to disable Nagle's algorithm", OFFSET(tcp_nodelay), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 1, DEC|ENC},
     {"timeout", "Maximum timeout (in seconds) to wait for incoming connections. -1 is infinite. Implies -rtmp_listen 1",  OFFSET(listen_timeout), AV_OPT_TYPE_INT, {.i64 = -1}, INT_MIN, INT_MAX, DEC, "rtmp_listen" },
+    {"rtmp_rw_timeout", "Maximum timeout (in seconds) to wait for incoming packets. -1 is infinite. Implies -rtmp_listen 1",  OFFSET(rw_timeout), AV_OPT_TYPE_INT, {.i64 = -1}, INT_MIN, INT_MAX, DEC, "rtmp_listen"},
     { NULL },
 };
 
