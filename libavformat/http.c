@@ -19,6 +19,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "common.h"
 #include "config.h"
 #include "config_components.h"
 
@@ -366,7 +367,7 @@ static int http_open_cnx(URLContext *h, AVDictionary **options)
     uint64_t off;
     char *cached;
 
-    s->start_time_ms = av_gettime() / 1000;
+    s->start_time_ms = US_TO_MS(av_gettime());
 
 redo:
 
@@ -472,7 +473,7 @@ int ff_http_do_new_request2(URLContext *h, const char *uri, AVDictionary **opts)
     int port1, port2;
 
     http_invalidate_auth(&s->auth_state);
-    s->start_time_ms = av_gettime() / 1000;
+    s->start_time_ms = US_TO_MS(av_gettime());
 
     if (!h->prot ||
         !(!strcmp(h->prot->name, "http") ||
@@ -1906,7 +1907,7 @@ static int http_shutdown(URLContext *h, int flags)
 
             read_ret = http_read_header(h);
 
-            curr_time_ms = av_gettime() / 1000;
+            curr_time_ms = US_TO_MS(av_gettime());
             req_time_ms = curr_time_ms - s->start_time_ms;
             av_log(h, AV_LOG_INFO, "HTTP response: %d, duration: %"PRId64", url: %s \n", s->http_code, req_time_ms, s->location);
 

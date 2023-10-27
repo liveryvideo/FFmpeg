@@ -1,17 +1,18 @@
 #include "dashenc_stats.h"
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <pthread.h>
-#include "libavutil/time.h"
+
 #include "libavutil/avstring.h"
+#include "libavutil/time.h"
 
 /**
  * Call his method with a value and it will print the min, max and average value once every logInterval.
  */
 void print_complete_stats(stats *stats, int64_t value)
 {
-    int64_t avgValue;
+    int64_t avgValue = 0;
     int64_t curr_time = av_gettime_relative();
 
     if (stats == NULL) {
@@ -21,14 +22,17 @@ void print_complete_stats(stats *stats, int64_t value)
     pthread_mutex_lock(&stats->stats_lock);
     stats->nrOfSamples++;
     stats->totalValue += value;
-    if (stats->maxValue < value)
+    if (stats->maxValue < value) {
         stats->maxValue = value;
+    }
 
-    if (stats->minValue > value || stats->minValue == 0)
+    if (stats->minValue > value || stats->minValue == 0) {
         stats->minValue = value;
+    }
 
-    if (stats->lastLog == 0)
+    if (stats->lastLog == 0) {
         stats->lastLog = curr_time;
+    }
 
     if (curr_time - stats->lastLog > stats->logInterval) {
         stats->lastLog = curr_time;
@@ -63,8 +67,9 @@ void print_total_stats(stats *stats, int64_t value)
     pthread_mutex_lock(&stats->stats_lock);
     stats->totalValue += value;
 
-    if (stats->lastLog == 0)
+    if (stats->lastLog == 0) {
         stats->lastLog = curr_time;
+    }
 
     if (curr_time - stats->lastLog > stats->logInterval) {
         stats->lastLog = curr_time;

@@ -1,7 +1,8 @@
 #include "dashenc_pool.h"
+
 #include <pthread.h>
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 struct pool_queue {
 	void *arg;
@@ -24,105 +25,111 @@ struct pool {
 static void * thread(void *arg);
 
 void * pool_start(void * (*thread_func)(void *), unsigned int threads) {
-	struct pool *p = (struct pool *) malloc(sizeof(struct pool) + (threads-1) * sizeof(pthread_t));
-	int i;
+	struct pool *pool = (struct pool *) malloc(sizeof(struct pool) + (threads-1) * sizeof(pthread_t));
 
-	pthread_mutex_init(&p->q_mtx, NULL);
-	pthread_cond_init(&p->q_cnd, NULL);
-	p->nthreads = threads;
-	p->fn = thread_func;
-	p->cancelled = 0;
-	p->remaining = 0;
-	p->end = NULL;
-	p->q = NULL;
+	pthread_mutex_init(&pool->q_mtx, NULL);
+	pthread_cond_init(&pool->q_cnd, NULL);
+	pool->nthreads = threads;
+	pool->fn = thread_func;
+	pool->cancelled = 0;
+	pool->remaining = 0;
+	pool->end = NULL;
+	pool->q = NULL;
 
-	for (i = 0; i < threads; i++) {
-		pthread_create(&p->threads[i], NULL, &thread, p);
+	for (int i = 0; i < threads; i++) {
+		pthread_create(&pool->threads[i], NULL, &thread, pool);
 	}
 
-	return p;
+	return pool;
 }
 
-void pool_enqueue(void *pool, void *arg, char free) {
-	struct pool *p = (struct pool *) pool;
-	struct pool_queue *q = (struct pool_queue *) malloc(sizeof(struct pool_queue));
-	q->arg = arg;
-	q->next = NULL;
-	q->free = free;
+void pool_enqueue(void *poolp, void *arg, char free) {
+	struct pool *pool = (struct pool *) poolp;
+	struct pool_queue *poolq = (struct pool_queue *) malloc(sizeof(struct pool_queue));
+	poolq->arg = arg;
+	poolq->next = NULL;
+	poolq->free = free;
 
-	pthread_mutex_lock(&p->q_mtx);
-	if (p->end != NULL) p->end->next = q;
-	if (p->q == NULL) p->q = q;
-	p->end = q;
-	p->remaining++;
-	pthread_cond_signal(&p->q_cnd);
-	pthread_mutex_unlock(&p->q_mtx);
+	pthread_mutex_lock(&pool->q_mtx);
+	if (pool->end != NULL) {
+		pool->end->next = poolq;
+	}
+	if (pool->q == NULL) {
+		pool->q = poolq;
+	}
+	pool->end = poolq;
+	pool->remaining++;
+	pthread_cond_signal(&pool->q_cnd);
+	pthread_mutex_unlock(&pool->q_mtx);
 }
 
-void pool_wait(void *pool) {
-	struct pool *p = (struct pool *) pool;
+void pool_wait(void *poolp) {
+	struct pool *pool = (struct pool *) poolp;
 
-	pthread_mutex_lock(&p->q_mtx);
-	while (!p->cancelled && p->remaining) {
-		pthread_cond_wait(&p->q_cnd, &p->q_mtx);
+	pthread_mutex_lock(&pool->q_mtx);
+	while (!pool->cancelled && pool->remaining) {
+		pthread_cond_wait(&pool->q_cnd, &pool->q_mtx);
 	}
-	pthread_mutex_unlock(&p->q_mtx);
+	pthread_mutex_unlock(&pool->q_mtx);
 }
 
-void pool_end(void *pool) {
-	struct pool *p = (struct pool *) pool;
-	struct pool_queue *q;
-	int i;
+void pool_end(void *poolp) {
+	struct pool *pool = (struct pool *) poolp;
+	struct pool_queue *poolq = NULL;
 
-	p->cancelled = 1;
+	pool->cancelled = 1;
 
-	pthread_mutex_lock(&p->q_mtx);
-	pthread_cond_broadcast(&p->q_cnd);
-	pthread_mutex_unlock(&p->q_mtx);
+	pthread_mutex_lock(&pool->q_mtx);
+	pthread_cond_broadcast(&pool->q_cnd);
+	pthread_mutex_unlock(&pool->q_mtx);
 
-	for (i = 0; i < p->nthreads; i++) {
-		pthread_join(p->threads[i], NULL);
+	for (int i = 0; i < pool->nthreads; i++) {
+		pthread_join(pool->threads[i], NULL);
 	}
 
-	while (p->q != NULL) {
-		q = p->q;
-		p->q = q->next;
+	while (pool->q != NULL) {
+		poolq = pool->q;
+		pool->q = poolq->next;
 
-		if (q->free) free(q->arg);
-		free(q);
+		if (poolq->free) {
+			free(poolq->arg);
+		}
+		free(poolq);
 	}
 
-	free(p);
+	free(pool);
 }
 
 static void * thread(void *arg) {
-	struct pool_queue *q;
-	struct pool *p = (struct pool *) arg;
+	struct pool_queue *poolq = NULL;
+	struct pool *pool = (struct pool *) arg;
 
-	while (!p->cancelled) {
-		pthread_mutex_lock(&p->q_mtx);
-		while (!p->cancelled && p->q == NULL) {
-			pthread_cond_wait(&p->q_cnd, &p->q_mtx);
+	while (!pool->cancelled) {
+		pthread_mutex_lock(&pool->q_mtx);
+		while (!pool->cancelled && pool->q == NULL) {
+			pthread_cond_wait(&pool->q_cnd, &pool->q_mtx);
 		}
-		if (p->cancelled) {
-			pthread_mutex_unlock(&p->q_mtx);
+		if (pool->cancelled) {
+			pthread_mutex_unlock(&pool->q_mtx);
 			return NULL;
 		}
-		q = p->q;
-		p->q = q->next;
-		p->end = (q == p->end ? NULL : p->end);
-		pthread_mutex_unlock(&p->q_mtx);
+		poolq = pool->q;
+		pool->q = poolq->next;
+		pool->end = (poolq == pool->end ? NULL : pool->end);
+		pthread_mutex_unlock(&pool->q_mtx);
 
-		p->fn(q->arg);
+		pool->fn(poolq->arg);
 
-		if (q->free) free(q->arg);
-		free(q);
-		q = NULL;
+		if (poolq->free) {
+			free(poolq->arg);
+		}
+		free(poolq);
+		poolq = NULL;
 
-		pthread_mutex_lock(&p->q_mtx);
-		p->remaining--;
-		pthread_cond_broadcast(&p->q_cnd);
-		pthread_mutex_unlock(&p->q_mtx);
+		pthread_mutex_lock(&pool->q_mtx);
+		pool->remaining--;
+		pthread_cond_broadcast(&pool->q_cnd);
+		pthread_mutex_unlock(&pool->q_mtx);
 	}
 
 	return NULL;
