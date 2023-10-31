@@ -7,26 +7,25 @@
  *
  */
 
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
-#include <pthread.h>
 #include <unistd.h>
 
 #include <sys/queue.h>
 
+#include "common.h"
 #include "dashenc_http.h"
-
-#include "config.h"
 #include "libavformat/internal.h"
 #include "libavutil/avassert.h"
-#include "libavutil/avutil.h"
 #include "libavutil/avstring.h"
+#include "libavutil/avutil.h"
 #include "libavutil/time.h"
 
 #include "avio_internal.h"
+#include "config_components.h"
 #include "dashenc_pool.h"
 #include "dashenc_stats.h"
-#include "config_components.h"
 #if CONFIG_HTTP_PROTOCOL
 #include "http.h"
 #endif
@@ -88,7 +87,7 @@ typedef struct connection {
 } connection;
 
 /* If there will be to may connections, this should be replaced with hashtable */
-LIST_HEAD(connections_head, connection) connections = LIST_HEAD_INITIALIZER(connections);
+static LIST_HEAD(connections_head, connection) connections = LIST_HEAD_INITIALIZER(connections);
 
 static pthread_mutex_t connections_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t connections_thread_exit_cv = PTHREAD_COND_INITIALIZER;
@@ -106,7 +105,7 @@ static void *thr_io_close(connection *conn);
 
 /* This method expects the lock to be already done.*/
 static void release_request(connection *conn) {
-    int64_t release_time = av_gettime() / 1000;
+    const int64_t release_time = US_TO_MS(av_gettime());
     av_log(NULL, AV_LOG_INFO, "release_request conn_nr: %d.\n", conn->nr);
 
     if (conn->claimed) {
@@ -132,7 +131,7 @@ static void release_request(connection *conn) {
     conn->open_error = false;
 }
 
-static void abort_if_needed(int mustSucceed) {
+static void abort_if_needed(const int mustSucceed) {
     if (mustSucceed) {
         av_log(NULL, AV_LOG_ERROR, "Abort because request needs to succeed and it did not.\n");
         abort();
@@ -143,12 +142,16 @@ static inline bool chunk_is_available(ChunksStorage *chunks) {
     return chunks->last_chunk_written < chunks->nr_of_chunks;
 }
 
+enum {
+    kWarningTreshold = 100
+};
+
 /* returns true if all the chunks are written */
 static bool write_chunk_if_available(connection *conn) {
-    int64_t start_time_ms;
-    int64_t write_time_ms;
-    int64_t flush_time_ms;
-    int64_t after_write_time_ms;
+    int64_t start_time_ms = 0;
+    int64_t write_time_ms = 0;
+    int64_t flush_time_ms = 0;
+    int64_t after_write_time_ms = 0;
 
     if (!conn->out) {
         av_log(NULL, AV_LOG_WARNING, "Connection not open so skip avio_write. Conn_nr: %d, url: %s\n", conn->nr , conn->url);
@@ -165,26 +168,21 @@ static bool write_chunk_if_available(connection *conn) {
     pthread_mutex_unlock(&conn->chunks.mutex);
 
 
-    start_time_ms = av_gettime() / 1000;
-    // if (chunk_nr > 282 || chunk->size > 50000) {
-    //     av_log(NULL, AV_LOG_WARNING, "chunk issue? chunk_nr: %d, conn_nr: %d, size: %d\n", chunk_nr, conn->nr, chunk->size);
-    // }
-
+    start_time_ms = US_TO_MS(av_gettime());
     avio_write(conn->out, chunk->buf, chunk->size);
-
-    after_write_time_ms = av_gettime() / 1000;
+    after_write_time_ms = US_TO_MS(av_gettime());
     write_time_ms = after_write_time_ms - start_time_ms;
-    if (write_time_ms > 100) {
+    if (write_time_ms > kWarningTreshold) {
         av_log(NULL, AV_LOG_WARNING, "It took %"PRId64"(ms) to write chunk. conn_nr: %d\n", write_time_ms, conn->nr);
     }
 
     avio_flush(conn->out);
-    flush_time_ms = av_gettime() / 1000 - after_write_time_ms;
-    if (flush_time_ms > 100) {
+    flush_time_ms = US_TO_MS(av_gettime()) - after_write_time_ms;
+    if (flush_time_ms > kWarningTreshold) {
         av_log(NULL, AV_LOG_WARNING, "It took %"PRId64"(ms) to flush chunk. conn_nr: %d\n", flush_time_ms, conn->nr);
     }
 
-    print_complete_stats(chunk_write_time_stats, av_gettime() / 1000 - start_time_ms);
+    print_complete_stats(chunk_write_time_stats, US_TO_MS(av_gettime()) - start_time_ms);
     print_complete_stats(conn_count_stats, nr_of_connections);
 
     return true;
@@ -212,15 +210,15 @@ static connection *get_conn(int conn_nr) {
 static int io_open_for_retry(connection *conn) {
     int ret = 0;
     URLContext *http_url_context = NULL;
-    AVFormatContext *s = conn->s;
+    AVFormatContext *ctx = conn->s;
 
     pthread_mutex_lock(&conn->open_mutex);
     if (!conn->opened) {
-        av_log(s, AV_LOG_INFO, "Connection for retry: %d not yet open. conn_nr: %d, url: %s\n", conn->retry_nr, conn->nr, conn->url);
+        av_log(ctx, AV_LOG_INFO, "Connection for retry: %d not yet open. conn_nr: %d, url: %s\n", conn->retry_nr, conn->nr, conn->url);
 
-        ret = s->io_open(s, &(conn->out), conn->url, AVIO_FLAG_WRITE, &conn->options);
+        ret = ctx->io_open(ctx, &(conn->out), conn->url, AVIO_FLAG_WRITE, &conn->options);
         if (ret < 0) {
-            av_log(s, AV_LOG_WARNING, "io_open_for_retry %d could not open url: %s\n", conn->retry_nr, conn->url);
+            av_log(ctx, AV_LOG_WARNING, "io_open_for_retry %d could not open url: %s\n", conn->retry_nr, conn->url);
             goto error;
         }
 
@@ -232,15 +230,15 @@ static int io_open_for_retry(connection *conn) {
 
     http_url_context = ffio_geturlcontext(conn->out);
     if (http_url_context == NULL) {
-        av_log(s, AV_LOG_WARNING, "Failed to get url context");
+        av_log(ctx, AV_LOG_WARNING, "Failed to get url context");
         goto error_close;
     }
 
     ret = ff_http_do_new_request(http_url_context, conn->url);
     if (ret != 0) {
-        const int64_t curr_time_ms = av_gettime() / 1000;
+        const int64_t curr_time_ms = US_TO_MS(av_gettime());
         const int64_t idle_tims_ms = curr_time_ms - conn->release_time;
-        av_log(s, AV_LOG_WARNING, "io_open_for_retry error conn_nr: %d, idle_time: %"PRId64", error: %d, retry_nr: %d, url: %s\n", conn->nr, idle_tims_ms, ret, conn->retry_nr, conn->url);
+        av_log(ctx, AV_LOG_WARNING, "io_open_for_retry error conn_nr: %d, idle_time: %"PRId64", error: %d, retry_nr: %d, url: %s\n", conn->nr, idle_tims_ms, ret, conn->retry_nr, conn->url);
         goto error_close;
     }
 
@@ -248,7 +246,7 @@ static int io_open_for_retry(connection *conn) {
 
 error_close:
     pthread_mutex_lock(&conn->open_mutex);
-    ff_format_io_close(s, &conn->out);
+    ff_format_io_close(ctx, &conn->out);
 
 error:
     conn->open_error = true;
@@ -256,26 +254,30 @@ error:
     return ret;
 }
 
+enum {
+    kRetryCount = 10
+};
+
 /**
  * This will retry a previously failed request.
  * We assume this method is ran from one of our own threads so we can safely use usleep.
  */
-static void retry(connection *conn) {
-    if (conn->retry_nr > 10) {
+static void retry(connection *conn) { /* NOLINT(misc-no-recursion) */
+    if (conn->retry_nr > kRetryCount) {
         av_log(NULL, AV_LOG_WARNING, "-event- request retry failed. Giving up. request: %s, attempt: %d, conn_nr: %d.\n",
-               conn->url, conn->retry_nr, conn->nr);
+                conn->url, conn->retry_nr, conn->nr);
         return;
     }
 
-    usleep(1 * 1000000);
+    usleep(kOneSecond);
 
     av_log(NULL, AV_LOG_INFO, "Request retry waiting for segment to be completely recorded. request: %s, attempt: %d, conn_nr: %d.\n",
-        conn->url, conn->retry_nr, conn->nr);
+            conn->url, conn->retry_nr, conn->nr);
 
-    int chunk_wait_timeout = 10;
+    int chunk_wait_timeout = kRetryCount;
     // Wait until all chunks are recorded
     while (!conn->chunks_done && chunk_wait_timeout > 0) {
-        usleep(1 * 1000000);
+        usleep(kOneSecond);
         chunk_wait_timeout --;
     }
     if (!conn->chunks_done) {
@@ -285,11 +287,10 @@ static void retry(connection *conn) {
     conn->retry_nr = conn->retry_nr + 1;
 
     av_log(NULL, AV_LOG_WARNING, "Starting retry for request %s, attempt: %d, conn_nr: %d\n", conn->url, conn->retry_nr, conn->nr);
-    int ret = io_open_for_retry(conn);
+    const int ret = io_open_for_retry(conn);
     if (ret < 0) {
         av_log(NULL, AV_LOG_WARNING, "-event- request retry failed request: %s, ret=%d, attempt: %d, conn_nr: %d.\n",
-               conn->url, ret, conn->retry_nr, conn->nr);
-
+                conn->url, ret, conn->retry_nr, conn->nr);
         retry(conn);
         return;
     }
@@ -297,7 +298,7 @@ static void retry(connection *conn) {
     conn->chunks.last_chunk_written = 0; /* Restart writing chunks from the beginning */
     pthread_mutex_unlock(&conn->chunks.mutex);
 
-    while (write_chunk_if_available(conn));
+    while (write_chunk_if_available(conn)) {}
 
     av_log(NULL, AV_LOG_INFO, "request retry done, start reading response. Request: %s, conn_nr: %d, attempt: %d.\n", conn->url, conn->nr, conn->retry_nr);
     thr_io_close(conn);
@@ -333,12 +334,16 @@ static void connection_exit(connection *conn) {
     pthread_exit(NULL);
 }
 
+enum {
+    kServerErrorsStart = 500
+};
+
 /**
  * This method closes the request and reads the response.
  */
-static void *thr_io_close(connection *conn) {
-    int ret;
-    int response_code;
+static void *thr_io_close(connection *conn) { /* NOLINT(misc-no-recursion) */
+    int ret = 0;
+    int response_code = 0;
 
     av_log(NULL, AV_LOG_INFO, "thr_io_close conn_nr: %d, out_addr: %p \n", conn->nr, conn->out);
 
@@ -363,7 +368,7 @@ static void *thr_io_close(connection *conn) {
         }
     }
 
-    if (ret < 0 || response_code >= 500) {
+    if (ret < 0 || response_code >= kServerErrorsStart) {
         av_log(NULL, AV_LOG_INFO, "-event- request failed ret=%d, conn_nr: %d, response_code: %d, url: %s.\n", ret, conn->nr, response_code, conn->url);
         abort_if_needed(conn->must_succeed);
         //must check if this is NULL or it causes crash on segmentation fault due to NULL pointer
@@ -375,8 +380,9 @@ static void *thr_io_close(connection *conn) {
         }
         pthread_mutex_unlock(&conn->open_mutex);
 
-        if (conn->retry)
+        if (conn->retry) {
             retry(conn);
+        }
     }
 
     release_request(conn);
@@ -397,8 +403,8 @@ static void *thr_io_close(connection *conn) {
  *
  */
 static int open_request_if_needed(connection *conn) {
-    int ret;
-    URLContext *http_url_context;
+    int ret = 0;
+    URLContext *http_url_context = NULL;
 
     pthread_mutex_lock(&conn->open_mutex);
     if (conn->req_opened) {
@@ -463,7 +469,6 @@ error:
  */
 static void *thr_io_write(void *arg) {
     connection *conn = (connection *)arg;
-    int conn_nr = conn->nr;
     //https://computing.llnl.gov/tutorials/pthreads/#ConditionVariables
 
     for (;;) {
@@ -479,7 +484,7 @@ static void *thr_io_write(void *arg) {
         pthread_mutex_unlock(&conn->chunks.mutex);
 
         open_request_if_needed(conn);
-        while (write_chunk_if_available(conn));
+        while (write_chunk_if_available(conn)) {}
 
         if (conn->chunks_done) {
             thr_io_close(conn);
@@ -488,13 +493,14 @@ static void *thr_io_write(void *arg) {
         }
     }
 
-    av_log(NULL, AV_LOG_INFO, "dashenc_http thread done, conn_nr: %d.\n", conn_nr);
+    av_log(NULL, AV_LOG_INFO, "dashenc_http thread done, conn_nr: %d.\n", conn->nr);
     return NULL;
 }
 
 static void request_cleanup(connection *conn) {
-    if (conn->cleanup_requested)
+    if (conn->cleanup_requested) {
         return;
+    }
 
     av_log(conn->s, AV_LOG_INFO, "Request cleanup of conn %d\n", conn->nr);
     conn->cleanup_requested = true;
@@ -509,7 +515,7 @@ static void request_cleanup(connection *conn) {
  * Trigger deletion of idle connections.
  * Expects connections_mutex to be locked.
  */
-static void free_idle_connections(int nr_of_idle_connections, int nr_of_connections_to_keep) {
+static void free_idle_connections(int nr_of_idle_connections, const int nr_of_connections_to_keep) {
     connection *conn = NULL;
 
     av_log(NULL, AV_LOG_INFO, "free_idle_connections, nr_of_idle_connections: %d, nr_of_connections_to_keep: %d\n", nr_of_idle_connections, nr_of_connections_to_keep);
@@ -530,13 +536,13 @@ static void free_idle_connections(int nr_of_idle_connections, int nr_of_connecti
  * Claims a free connection and returns it.
  * Released connections are used first.
  */
-static connection *claim_connection(char *url, int need_new_connection) {
-    int64_t lowest_release_time = av_gettime() / 1000;
+static connection *claim_connection(const char *url, const int need_new_connection) {
+    int64_t lowest_release_time = US_TO_MS(av_gettime());
     int conn_nr = -1;
     int conn_idle_count = 0;
     connection *conn = NULL;
     connection *conn_l = NULL;
-    size_t len;
+    size_t len = 0;
 
     if (url == NULL) {
         av_log(NULL, AV_LOG_INFO, "Claimed conn_id: -1, url: NULL\n");
@@ -556,7 +562,7 @@ static connection *claim_connection(char *url, int need_new_connection) {
     }
 
     if (conn_nr == -1) {
-        conn = calloc(1, sizeof(*conn));
+        conn = av_mallocz(sizeof(*conn));
         if (conn == NULL) {
             pthread_mutex_unlock(&connections_mutex);
             return conn;
@@ -564,28 +570,33 @@ static connection *claim_connection(char *url, int need_new_connection) {
 
         pthread_mutex_init(&conn->open_mutex, NULL);
 
-        //TODO: In theory when we have a rollover of total_nr_of_connections we could claim a connection number that is still in use.
+        //TODO(LIV-2683): In theory when we have an overflow of total_nr_of_connections we could claim a connection number that is still in use.
         conn_nr = total_nr_of_connections;
         conn->nr = conn_nr;
         nr_of_connections++;
         total_nr_of_connections++;
+
+        if (total_nr_of_connections == INT_MAX) {
+            av_log(NULL, AV_LOG_FATAL, "total_nr_of_connections overflow\n");
+            abort();
+        }
 
         pthread_mutex_init(&conn->chunks.mutex, NULL);
         pthread_cond_init(&conn->chunks.cv, NULL);
 
         pthread_attr_t attr;
         if (pthread_attr_init(&attr)) {
-            av_log(NULL, AV_LOG_ERROR, "Error creating thread attributes.\n");
+            av_log(NULL, AV_LOG_FATAL, "Error creating thread attributes.\n");
             abort();
         }
 
         if (pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED)) {
-            av_log(NULL, AV_LOG_ERROR, "Error setting thread attributes.\n");
+            av_log(NULL, AV_LOG_FATAL, "Error setting thread attributes.\n");
             abort();
         }
 
         if(pthread_create(&conn->w_thread, &attr, thr_io_write, conn)) {
-            av_log(NULL, AV_LOG_ERROR, "Error creating thread so abort.\n");
+            av_log(NULL, AV_LOG_FATAL, "Error creating thread so abort.\n");
             abort();
         }
 
@@ -609,7 +620,7 @@ static connection *claim_connection(char *url, int need_new_connection) {
     conn->claimed = true;
 
     if(conn_idle_count > max_idle_connections){
-        free_idle_connections(conn_idle_count, max_idle_connections);
+        free_idle_connections(conn_idle_count, max_idle_connections); /* NOLINT(readability-suspicious-call-argument) */
     }
 
     pthread_mutex_unlock(&connections_mutex);
@@ -621,15 +632,16 @@ static connection *claim_connection(char *url, int need_new_connection) {
  * Opens a request on a free connection and returns the connection number
  * Only used for non persistent HTTP connections or file based output
  */
-static int open_request(AVFormatContext *s, char *url, AVDictionary **options) {
+static int open_request(AVFormatContext *ctx, char *url, AVDictionary **options) {
+    int ret = 0;
     connection *conn = claim_connection(url, 0);
 
     pthread_mutex_lock(&conn->open_mutex);
     if (conn->opened) {
-        av_log(s, AV_LOG_WARNING, "open_request while connection might be open. This is TODO for when not using persistent connections. conn_nr: %d\n", conn->nr);
+        av_log(ctx, AV_LOG_WARNING, "open_request while connection might be open. This is TODO for when not using persistent connections. conn_nr: %d\n", conn->nr);
     }
 
-    int ret = s->io_open(s, &conn->out, url, AVIO_FLAG_WRITE, options);
+    ret = ctx->io_open(ctx, &conn->out, url, AVIO_FLAG_WRITE, options);
     if (ret >= 0) {
         ret = conn->nr;
         conn->opened = true;
@@ -643,42 +655,44 @@ static int open_request(AVFormatContext *s, char *url, AVDictionary **options) {
  * Claim a connection and start a new request.
  * The claimed connection number is returned.
  */
-int pool_io_open(AVFormatContext *s, char *filename,
-                 AVDictionary **options, int http_persistent, int must_succeed, int retry, int need_new_connection) {
-
-    int http_base_proto = filename ? ff_is_http_proto(filename) : 0;
-    int ret = AVERROR_MUXER_NOT_FOUND;
+int pool_io_open(AVFormatContext *ctx, const char *filename,
+        AVDictionary **options, const int http_persistent, const int must_succeed, const int retry, const int need_new_connection) {
+    const int http_base_proto = filename ? ff_is_http_proto(filename) : 0;
 
     if (!http_base_proto || !http_persistent) {
         //open_request returns the newly claimed conn_nr
-        ret = open_request(s, filename, options);
-        av_log(s, AV_LOG_WARNING, "Non HTTP request %s\n", filename);
-#if CONFIG_HTTP_PROTOCOL
-    } else {
-        AVDictionary *d = NULL;
-
-        //claim new item from pool and open connection if needed
-        connection *conn = claim_connection(filename, need_new_connection);
-
-        conn = get_conn(conn->nr);
-        conn->must_succeed = must_succeed;
-        conn->retry = retry;
-        conn->s = s;
-
-        conn->options = d;
-        ret = av_dict_copy(&conn->options, *options, 0);
-        if (ret < 0) {
-            av_log(s, AV_LOG_WARNING, "Could not copy options for %s\n", filename);
-            abort_if_needed(must_succeed);
-            return ret;
-        }
-
-        conn->http_persistent = http_persistent;
-        ret = conn->nr;
-#endif
+        av_log(ctx, AV_LOG_WARNING, "Non HTTP request %s\n", filename);
+        return open_request(ctx, filename, options);
     }
 
-    return ret;
+#if CONFIG_HTTP_PROTOCOL
+
+    //claim new item from pool and open connection if needed
+    connection *conn = claim_connection(filename, need_new_connection);
+
+    conn = get_conn(conn->nr);
+    conn->must_succeed = must_succeed;
+    conn->retry = retry;
+    conn->s = ctx;
+    conn->options = NULL;
+
+    const int ret = av_dict_copy(&conn->options, *options, 0);
+    if (ret < 0) {
+        av_log(ctx, AV_LOG_WARNING, "Could not copy options for %s\n", filename);
+        abort_if_needed(must_succeed);
+        return ret;
+    }
+
+    conn->http_persistent = http_persistent;
+    return conn->nr;
+#else
+    UNUSED(http_persistent);
+    UNUSED(must_succeed);
+    UNUSED(retry);
+    UNUSED(need_new_connection);
+
+    return AVERROR_MUXER_NOT_FOUND;
+#endif
 }
 
 /**
@@ -692,9 +706,9 @@ static void pool_conn_close(connection *conn) {
     pthread_mutex_unlock(&conn->chunks.mutex);
 }
 
-void pool_io_close(AVFormatContext *s, char *filename, int conn_nr) {
+void pool_io_close(AVFormatContext *ctx, const char *filename, const int conn_nr) {
     if (conn_nr < 0) {
-        av_log(s, AV_LOG_WARNING, "Invalid conn_nr in pool_io_close for filename: %s, conn_nr: %d\n", filename, conn_nr);
+        av_log(ctx, AV_LOG_WARNING, "Invalid conn_nr in pool_io_close for filename: %s, conn_nr: %d\n", filename, conn_nr);
         return;
     }
 
@@ -703,10 +717,10 @@ void pool_io_close(AVFormatContext *s, char *filename, int conn_nr) {
     pool_conn_close(conn);
 }
 
-void pool_free_all(AVFormatContext *s) {
+void pool_free_all(AVFormatContext *ctx) {
     connection *conn = NULL;
 
-    av_log(s, AV_LOG_INFO, "pool_free_all\n");
+    av_log(ctx, AV_LOG_INFO, "pool_free_all\n");
 
     // Signal the connections to close
     should_stop = true;
@@ -725,23 +739,23 @@ void pool_free_all(AVFormatContext *s) {
     }
     pthread_mutex_unlock(&connections_mutex);
 
-    av_log(s, AV_LOG_INFO, "All requests are stopped\n");
+    av_log(ctx, AV_LOG_INFO, "All requests are stopped\n");
 }
 
 
-void pool_write_flush_mem(int conn_nr) {
+void pool_write_flush_mem(const int conn_nr) {
     if (conn_nr < 0) {
         av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr in pool_write_flush_mem. conn_nr: %d\n", conn_nr);
         return;
     }
 
     connection *conn = get_conn(conn_nr);
-    int read_size = conn->mem->ptr - conn->mem->buf;
+    const int read_size = (int)(conn->mem->ptr - conn->mem->buf);
 
     pool_write_flush(conn->mem->buf, read_size, conn_nr);
 }
 
-void pool_write_flush(const unsigned char *buf, int size, int conn_nr) {
+void pool_write_flush(const unsigned char *buf, const int size, const int conn_nr) {
     if (conn_nr < 0) {
         av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr in pool_write_flush. conn_nr: %d\n", conn_nr);
         return;
@@ -771,20 +785,21 @@ void pool_write_flush(const unsigned char *buf, int size, int conn_nr) {
 }
 
 static int write_packet(void *opaque, uint8_t *buf, int buf_size) {
-    struct buffer_data *bd = (struct buffer_data *)opaque;
-    while (buf_size > bd->room) {
-        int64_t offset = bd->ptr - bd->buf;
-        bd->buf = av_realloc_f(bd->buf, 2, bd->size);
-        if (!bd->buf)
+    struct buffer_data *buffer_data = (struct buffer_data *)opaque;
+    while (buf_size > buffer_data->room) {
+        int64_t offset = buffer_data->ptr - buffer_data->buf;
+        buffer_data->buf = av_realloc_f(buffer_data->buf, 2, buffer_data->size);
+        if (!buffer_data->buf) {
             return AVERROR(ENOMEM);
-        bd->size *= 2;
-        bd->ptr = bd->buf + offset;
-        bd->room = bd->size - offset;
+        }
+        buffer_data->size *= 2;
+        buffer_data->ptr = buffer_data->buf + offset;
+        buffer_data->room = buffer_data->size - offset;
     }
 
-    memcpy(bd->ptr, buf, buf_size);
-    bd->ptr  += buf_size;
-    bd->room -= buf_size;
+    memcpy(buffer_data->ptr, buf, buf_size);
+    buffer_data->ptr  += buf_size;
+    buffer_data->room -= buf_size;
 
     return buf_size;
 }
@@ -813,7 +828,7 @@ AVIOContext *pool_create_mem_context(int conn_nr) {
     }
     conn->mem->size = conn->mem->room = bd_buf_size;
 
-    const size_t avio_ctx_buffer_size = 20;
+    const int avio_ctx_buffer_size = 20;
     unsigned char *avio_ctx_buffer = av_malloc(avio_ctx_buffer_size);
     if (!avio_ctx_buffer) {
         av_log(NULL, AV_LOG_WARNING, "Could not allocate memory avio_ctx_buffer_size. conn_nr: %d\n", conn_nr);
@@ -841,6 +856,6 @@ void pool_free_mem_context(AVIOContext **out, int conn_nr) {
 }
 
 void pool_init() {
-    chunk_write_time_stats = init_stats("chunk_write_time", 5 * 1000000);
-    conn_count_stats = init_stats("nr_of_connections", 5 * 1000000);
+    chunk_write_time_stats = init_stats("chunk_write_time", kDefaultStatsTime);
+    conn_count_stats = init_stats("nr_of_connections", kDefaultStatsTime);
 }

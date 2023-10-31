@@ -24,12 +24,12 @@ void * pool_start(void * (*thread_func)(void *), unsigned int threads);
  * \param arg The argument to pass to the thread worker function.
  * \param free If true, the argument will be freed after the task has completed.
  */
-void pool_enqueue(void *pool, void *arg, char free);
+void pool_enqueue(void *poolp, void *arg, char free);
 
 /**
  * Wait for all queued tasks to be completed.
  */
-void pool_wait(void *pool);
+void pool_wait(void *poolp);
 
 /**
  * Stop all threads in the pool.
@@ -39,5 +39,5 @@ void pool_wait(void *pool);
  * Remaining work item arguments will be freed depending on the free argument to
  * pool_enqueue.
  */
-void pool_end(void *pool);
+void pool_end(void *poolp);
 #endif
