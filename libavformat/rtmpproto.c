@@ -2181,6 +2181,9 @@ static int handle_invoke(URLContext *s, RTMPPacket *pkt)
     } else if (ff_amf_match_string(pkt->data, pkt->size, "onStatus")) {
         if ((ret = handle_invoke_status(s, pkt)) < 0)
             return ret;
+    } else if (ff_amf_match_string(pkt->data, pkt->size, "FCUnpublish")) {
+            av_log(s, AV_LOG_DEBUG, "Recieved FCUnpublish, stopping stream\n");
+            rt->state = STATE_STOPPED;
     } else if (ff_amf_match_string(pkt->data, pkt->size, "onBWDone")) {
         if ((ret = gen_check_bw(s, rt)) < 0)
             return ret;
