@@ -206,7 +206,10 @@ typedef struct DASHContext {
     int first_mpd_written; /* used to log some details the first time the mpd is written */
     stats *audio_time_stats;
     stats *video_time_stats;
+
+    int seg_start_deviation_stats_size;
     stats **seg_start_deviation_stats;
+
     int64_t suggested_presentation_delay;
 
     int frag_type;
@@ -667,7 +670,9 @@ static void dash_free(AVFormatContext *s)
         av_freep(&os->init_seg_name);
         av_freep(&os->media_seg_name);
         free_stats(os->bitrate_stats);
-        free_stats(c->seg_start_deviation_stats[i]);
+        if (c->seg_start_deviation_stats_size > i)  {
+            free_stats(c->seg_start_deviation_stats[i]);
+        }
     }
     free_stats(c->audio_time_stats);
     free_stats(c->video_time_stats);
@@ -1827,8 +1832,8 @@ FF_ENABLE_DEPRECATION_WARNINGS
             return AVERROR(ENOMEM);
         }
 
-        int size = i;
-        av_dynarray_add(&c->seg_start_deviation_stats, &size, stat);
+        c->seg_start_deviation_stats_size = i;
+        av_dynarray_add(&c->seg_start_deviation_stats, &c->seg_start_deviation_stats_size, stat);
         av_free(name);
     }
 
