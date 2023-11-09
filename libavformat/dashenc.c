@@ -2229,7 +2229,7 @@ static void print_stats(DASHContext *c, OutputStream *os, const AVPacket *pkt)
     const int64_t pkt_init_time = get_init_time(c, pkt);
     if (pkt_init_time >= 0) {
         //av_gettime_relative is in microseconds
-        const int64_t pTime = US_TO_MS(av_gettime_relative() - pkt_init_time) / 1000;
+        const int64_t pTime = US_TO_MS(av_gettime_relative() - pkt_init_time);
 
         if (os->ctx->streams[0]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             print_complete_stats(c->video_time_stats, pTime);
@@ -2511,7 +2511,7 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
 
         //framerate of samplerate zou de pts increase moeten bepalen?
         //time_base zou dat ook zijn
-        const int64_t seg_start_time = (int64_t) S_TO_MS((os->segment_index-1) * c->seg_duration);
+        const int64_t seg_start_time = (int64_t) MS_TO_S((os->segment_index-1) * c->seg_duration);
         //seg_start_time vs pts
         const int64_t pts_in_ms = pkt->pts*S_TO_MS(st->time_base.num)/st->time_base.den;
         const int pts_diff = seg_start_time - pts_in_ms;
