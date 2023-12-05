@@ -113,10 +113,10 @@ static void rv34_gen_vlc(const uint8_t *bits, int size, VLC *vlc, const uint8_t 
 
     vlc->table           = &table_data[*offset];
     vlc->table_allocated = FF_ARRAY_ELEMS(table_data) - *offset;
-    ff_init_vlc_sparse(vlc, FFMIN(maxbits, 9), size,
+    ff_vlc_init_sparse(vlc, FFMIN(maxbits, 9), size,
                        bits, 1, 1,
                        cw,    2, 2,
-                       syms, !!syms, !!syms, INIT_VLC_STATIC_OVERLONG);
+                       syms, !!syms, !!syms, VLC_INIT_STATIC_OVERLONG);
     *offset += vlc->table_size;
 }
 
@@ -1498,7 +1498,6 @@ av_cold int ff_rv34_decode_init(AVCodecContext *avctx)
     avctx->has_b_frames = 1;
     s->low_delay = 0;
 
-    ff_mpv_idct_init(s);
     if ((ret = ff_mpv_common_init(s)) < 0)
         return ret;
 
@@ -1549,8 +1548,7 @@ int ff_rv34_decode_update_thread_context(AVCodecContext *dst, const AVCodecConte
 static int get_slice_offset(AVCodecContext *avctx, const uint8_t *buf, int n, int slice_count, int buf_size)
 {
     if (n < slice_count) {
-        if(avctx->slice_count) return avctx->slice_offset[n];
-        else                   return AV_RL32(buf + n*8 - 4) == 1 ? AV_RL32(buf + n*8) :  AV_RB32(buf + n*8);
+        return AV_RL32(buf + n*8 - 4) == 1 ? AV_RL32(buf + n*8) :  AV_RB32(buf + n*8);
     } else
         return buf_size;
 }
@@ -1561,7 +1559,7 @@ static int finish_frame(AVCodecContext *avctx, AVFrame *pict)
     MpegEncContext *s = &r->s;
     int got_picture = 0, ret;
 
-    ff_er_frame_end(&s->er);
+    ff_er_frame_end(&s->er, NULL);
     ff_mpv_frame_end(s);
     s->mb_num_left = 0;
 
@@ -1623,13 +1621,10 @@ int ff_rv34_decode_frame(AVCodecContext *avctx, AVFrame *pict,
         return 0;
     }
 
-    if(!avctx->slice_count){
-        slice_count = (*buf++) + 1;
-        slices_hdr = buf + 4;
-        buf += 8 * slice_count;
-        buf_size -= 1 + 8 * slice_count;
-    }else
-        slice_count = avctx->slice_count;
+    slice_count = (*buf++) + 1;
+    slices_hdr = buf + 4;
+    buf += 8 * slice_count;
+    buf_size -= 1 + 8 * slice_count;
 
     offset = get_slice_offset(avctx, slices_hdr, 0, slice_count, buf_size);
     //parse first slice header to check whether this frame can be decoded
@@ -1659,7 +1654,7 @@ int ff_rv34_decode_frame(AVCodecContext *avctx, AVFrame *pict,
             av_log(avctx, AV_LOG_ERROR, "New frame but still %d MB left.\n",
                    s->mb_num_left);
             if (!s->context_reinit)
-                ff_er_frame_end(&s->er);
+                ff_er_frame_end(&s->er, NULL);
             ff_mpv_frame_end(s);
         }
 
@@ -1696,6 +1691,8 @@ int ff_rv34_decode_frame(AVCodecContext *avctx, AVFrame *pict,
             int i;
 
             r->tmp_b_block_base = av_malloc(s->linesize * 48);
+            if (!r->tmp_b_block_base)
+                return AVERROR(ENOMEM);
             for (i = 0; i < 2; i++)
                 r->tmp_b_block_y[i] = r->tmp_b_block_base
                                       + i * 16 * s->linesize;
@@ -1792,7 +1789,7 @@ int ff_rv34_decode_frame(AVCodecContext *avctx, AVFrame *pict,
             av_log(avctx, AV_LOG_INFO, "marking unfished frame as finished\n");
             /* always mark the current frame as finished, frame-mt supports
              * only complete frames */
-            ff_er_frame_end(&s->er);
+            ff_er_frame_end(&s->er, NULL);
             ff_mpv_frame_end(s);
             s->mb_num_left = 0;
             ff_thread_report_progress(&s->current_picture_ptr->tf, INT_MAX, 0);
