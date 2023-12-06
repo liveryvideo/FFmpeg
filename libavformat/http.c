@@ -23,6 +23,7 @@
 #include "config.h"
 #include "config_components.h"
 
+#include <time.h>
 #if CONFIG_ZLIB
 #include <zlib.h>
 #endif /* CONFIG_ZLIB */
@@ -1219,7 +1220,7 @@ static int process_line(URLContext *h, char *line, int line_count)
             }
         } else if (!av_strcasecmp(tag, "Content-Type")) {
             av_free(s->mime_type);
-            s->mime_type = av_strdup(p);
+            s->mime_type = av_get_token((const char **)&p, ";");
         } else if (!av_strcasecmp(tag, "Set-Cookie")) {
             if (parse_cookie(s, p, &s->cookie_dict))
                 av_log(h, AV_LOG_WARNING, "Unable to parse '%s'\n", p);
@@ -1307,9 +1308,9 @@ static int get_cookies(HTTPContext *s, char **cookies, const char *path,
                 goto skip_cookie;
         }
 
-        // ensure this cookie matches the path
+        // if a cookie path is provided, ensure the request path is within that path
         e = av_dict_get(cookie_params, "path", NULL, 0);
-        if (!e || av_strncasecmp(path, e->value, strlen(e->value)))
+        if (e && av_strncasecmp(path, e->value, strlen(e->value)))
             goto skip_cookie;
 
         // cookie parameters match, so copy the value
