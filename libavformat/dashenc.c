@@ -206,7 +206,11 @@ typedef struct DASHContext {
     int first_mpd_written; /* used to log some details the first time the mpd is written */
     stats *audio_time_stats;
     stats *video_time_stats;
+    stats *subtitle_time_stats;
+
+    int seg_start_deviation_stats_size;
     stats **seg_start_deviation_stats;
+
     int64_t suggested_presentation_delay;
 
     int frag_type;
@@ -386,6 +390,8 @@ static void set_codec_str(AVFormatContext *s, AVCodecParameters *par,
         tags[0] = ff_codec_movvideo_tags;
     else if (par->codec_type == AVMEDIA_TYPE_AUDIO)
         tags[0] = ff_codec_movaudio_tags;
+    else if (par->codec_type == AVMEDIA_TYPE_SUBTITLE)
+        tags[0] = ff_codec_movsubtitle_tags;
     else
         return;
 
@@ -667,10 +673,13 @@ static void dash_free(AVFormatContext *s)
         av_freep(&os->init_seg_name);
         av_freep(&os->media_seg_name);
         free_stats(os->bitrate_stats);
-        free_stats(c->seg_start_deviation_stats[i]);
+        if (c->seg_start_deviation_stats_size > i)  {
+            free_stats(c->seg_start_deviation_stats[i]);
+        }
     }
     free_stats(c->audio_time_stats);
     free_stats(c->video_time_stats);
+    free_stats(c->subtitle_time_stats);
     av_freep(&c->streams);
 
     pool_free_all(s);
@@ -841,13 +850,24 @@ static int write_adaptation_set(AVFormatContext *s, AVIOContext *out, int as_ind
     int i;
     int j = 0, target_duration = 0;
 
-    avio_printf(out, "\t\t<AdaptationSet id=\"%d\" contentType=\"%s\" startWithSAP=\"1\" segmentAlignment=\"true\" bitstreamSwitching=\"true\"",
-                as->id, as->media_type == AVMEDIA_TYPE_VIDEO ? "video" : "audio");
-    if (as->media_type == AVMEDIA_TYPE_VIDEO && as->max_frame_rate.num && !as->ambiguous_frame_rate && av_cmp_q(as->min_frame_rate, as->max_frame_rate) < 0)
-        avio_printf(out, " maxFrameRate=\"%d/%d\"", as->max_frame_rate.num, as->max_frame_rate.den);
-    else if (as->media_type == AVMEDIA_TYPE_VIDEO && as->max_frame_rate.num && !as->ambiguous_frame_rate && !av_cmp_q(as->min_frame_rate, as->max_frame_rate))
-        avio_printf(out, " frameRate=\"%d/%d\"", as->max_frame_rate.num, as->max_frame_rate.den);
+    char *media_type = NULL;
     if (as->media_type == AVMEDIA_TYPE_VIDEO) {
+        media_type = "video";
+    } else if (as->media_type == AVMEDIA_TYPE_AUDIO) {
+        media_type = "audio";
+    } else if (as->media_type == AVMEDIA_TYPE_SUBTITLE) {
+        media_type = "text";
+    } else {
+        return AVERROR(EINVAL);
+    }
+
+    avio_printf(out, "\t\t<AdaptationSet id=\"%d\" contentType=\"%s\" startWithSAP=\"1\" segmentAlignment=\"true\" bitstreamSwitching=\"true\"",
+                    as->id, media_type);
+    if (as->media_type == AVMEDIA_TYPE_VIDEO) {
+        if (as->max_frame_rate.num && !as->ambiguous_frame_rate && av_cmp_q(as->min_frame_rate, as->max_frame_rate) < 0)
+            avio_printf(out, " maxFrameRate=\"%d/%d\"", as->max_frame_rate.num, as->max_frame_rate.den);
+        else if (as->max_frame_rate.num && !as->ambiguous_frame_rate && !av_cmp_q(as->min_frame_rate, as->max_frame_rate))
+                    avio_printf(out, " frameRate=\"%d/%d\"", as->max_frame_rate.num, as->max_frame_rate.den);
         avio_printf(out, " maxWidth=\"%d\" maxHeight=\"%d\"", as->max_width, as->max_height);
         avio_printf(out, " par=\"%d:%d\"", as->par.num, as->par.den);
     }
@@ -914,11 +934,14 @@ static int write_adaptation_set(AVFormatContext *s, AVIOContext *out, int as_ind
             if (!os->coding_dependency)
                 avio_printf(out, " codingDependency=\"false\"");
             avio_printf(out, ">\n");
-        } else {
+        } else if (as->media_type == AVMEDIA_TYPE_AUDIO){
             avio_printf(out, "\t\t\t<Representation id=\"%d\" mimeType=\"audio/%s\" codecs=\"%s\"%s audioSamplingRate=\"%d\">\n",
                 i, os->format_name, os->codec_str, bandwidth_str, s->streams[i]->codecpar->sample_rate);
             avio_printf(out, "\t\t\t\t<AudioChannelConfiguration schemeIdUri=\"urn:mpeg:dash:23003:3:audio_channel_configuration:2011\" value=\"%d\" />\n",
                 s->streams[i]->codecpar->ch_layout.nb_channels);
+        } else if (as->media_type == AVMEDIA_TYPE_SUBTITLE) {
+            avio_printf(out, "\t\t\t<Representation id=\"%d\" mimeType=\"application/%s\" codecs=\"%s\"%s>\n",
+                i, os->format_name, os->codec_str, bandwidth_str);
         }
         if (!final && c->write_prft && os->producer_reference_time_str[0]) {
             avio_printf(out, "\t\t\t\t<ProducerReferenceTime id=\"%d\" inband=\"true\" type=\"%s\" wallClockTime=\"%s\" presentationTime=\"%"PRId64"\">\n",
@@ -1123,8 +1146,17 @@ static int parse_adaptation_sets(AVFormatContext *s)
             p += n;
 
             // if value is "a" or "v", map all streams of that type
-            if (as->media_type == AVMEDIA_TYPE_UNKNOWN && (idx_str[0] == 'v' || idx_str[0] == 'a')) {
-                enum AVMediaType type = (idx_str[0] == 'v') ? AVMEDIA_TYPE_VIDEO : AVMEDIA_TYPE_AUDIO;
+            if (as->media_type == AVMEDIA_TYPE_UNKNOWN && (idx_str[0] == 'v' || idx_str[0] == 'a' || idx_str[0] == 's')) {
+                enum AVMediaType type;
+                if (idx_str[0] == 'v') {
+                    type = AVMEDIA_TYPE_VIDEO;
+                } else if (idx_str[0] == 'a') {
+                    type = AVMEDIA_TYPE_AUDIO;
+                } else if (idx_str[0] == 's') {
+                    type = AVMEDIA_TYPE_SUBTITLE;
+                } else {
+                    return AVERROR(EINVAL);
+                }
                 av_log(s, AV_LOG_DEBUG, "Map all streams of type %s\n", idx_str);
 
                 for (i = 0; i < s->nb_streams; i++) {
@@ -1219,6 +1251,10 @@ static int write_manifest(AVFormatContext *s, int final)
     }
 
     out = pool_create_mem_context(mpd_conn_nr);
+    if (out == NULL) {
+        av_log(s, AV_LOG_ERROR, "Failed to allocate mem context\n");
+        return AVERROR(ENOMEM);
+    }
 
     avio_printf(out, "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
     //LLS-1614 removed type=static because we don't want players to playback a recording of the stream yet.
@@ -1305,8 +1341,11 @@ static int write_manifest(AVFormatContext *s, int final)
     }
 
     for (i = 0; i < c->nb_as; i++) {
-        if ((ret = write_adaptation_set(s, out, i, final)) < 0)
+        if ((ret = write_adaptation_set(s, out, i, final)) < 0) {
+            av_log(s, AV_LOG_ERROR, "Failed to write adaptation set: %s\n", av_err2str(ret));
+            pool_free_mem_context(&out, mpd_conn_nr);
             return ret;
+        }
     }
     avio_printf(out, "\t</Period>\n");
 
@@ -1408,6 +1447,19 @@ static int write_manifest(AVFormatContext *s, int final)
                 ff_hls_write_stream_info(st, m3u8_out, stream_bitrate,
                                          playlist_file, agroup,
                                          codec_str, NULL, NULL);
+            }
+
+            for (i = 0; i < s->nb_streams; i++) {
+                char playlist_file[64];
+                AVStream *st = s->streams[i];
+                OutputStream *os = &c->streams[i];
+                if (st->codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE)
+                    continue;
+                if (os->segment_type != SEGMENT_TYPE_MP4)
+                    continue;
+                get_hls_playlist_name(playlist_file, sizeof(playlist_file), NULL, i);
+                ff_hls_write_subtitle_rendition(m3u8_out, (char *)audio_group,
+                                             playlist_file, NULL, i, is_default);
             }
 
         } else {
@@ -1827,8 +1879,8 @@ FF_ENABLE_DEPRECATION_WARNINGS
             return AVERROR(ENOMEM);
         }
 
-        int size = i;
-        av_dynarray_add(&c->seg_start_deviation_stats, &size, stat);
+        c->seg_start_deviation_stats_size = i;
+        av_dynarray_add(&c->seg_start_deviation_stats, &c->seg_start_deviation_stats_size, stat);
         av_free(name);
     }
 
@@ -1844,6 +1896,7 @@ FF_ENABLE_DEPRECATION_WARNINGS
 
     c->audio_time_stats = init_stats("audio_processing", kDefaultStatsTime);
     c->video_time_stats = init_stats("video_processing", kDefaultStatsTime);
+    c->subtitle_time_stats = init_stats("subtitle_processing", kDefaultStatsTime);
 
     return 0;
 }
@@ -2068,7 +2121,8 @@ static int dash_flush(AVFormatContext *s, int final, int stream)
             if (s->streams[stream]->codecpar->codec_type != AVMEDIA_TYPE_VIDEO &&
                 s->streams[i]->codecpar->codec_type != AVMEDIA_TYPE_VIDEO)
                 continue;
-            if (s->streams[i]->codecpar->codec_type != AVMEDIA_TYPE_AUDIO)
+            if (s->streams[i]->codecpar->codec_type != AVMEDIA_TYPE_AUDIO &&
+                    s->streams[i]->codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE)
                 continue;
             // Make sure we don't flush audio streams multiple times, when
             // all video streams are flushed one at a time.
@@ -2225,8 +2279,10 @@ static void print_stats(DASHContext *c, OutputStream *os, const AVPacket *pkt)
 
         if (os->ctx->streams[0]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             print_complete_stats(c->video_time_stats, pTime);
-        } else {
+        } else if (os->ctx->streams[0]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
             print_complete_stats(c->audio_time_stats, pTime);
+        } else if  (os->ctx->streams[0]->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE) {
+            print_complete_stats(c->subtitle_time_stats, pTime);
         }
 
     } else {
