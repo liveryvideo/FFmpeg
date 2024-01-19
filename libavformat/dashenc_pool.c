@@ -4,6 +4,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/* clang-tidy complains about pthread types, because they're not included directly, but this is intended */
+#define pthread_mutex_t /* NOLINT(misc-include-cleaner) */ pthread_mutex_t
+#define pthread_t /* NOLINT(misc-include-cleaner) */ pthread_t
+#define pthread_cond_t /* NOLINT(misc-include-cleaner) */ pthread_cond_t
+#define pthread_attr_t /* NOLINT(misc-include-cleaner) */ pthread_attr_t
+
 struct pool_queue {
 	void *arg;
 	char free;
