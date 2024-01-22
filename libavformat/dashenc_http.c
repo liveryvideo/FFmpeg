@@ -6,29 +6,45 @@
  * There is some code in here that is also considering file based output, this is currently not used in production.
  *
  */
+#include "dashenc_http.h"
 
+#include <errno.h>
+#include <inttypes.h>
+#include <limits.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include <sys/queue.h>
 
-#include "common.h"
-#include "dashenc_http.h"
-#include "libavformat/internal.h"
-#include "libavutil/avassert.h"
-#include "libavutil/avstring.h"
-#include "libavutil/avutil.h"
-#include "libavutil/time.h"
+#include <libavformat/avformat.h>
+#include <libavformat/avio.h>
+#include <libavformat/internal.h>
+#include <libavformat/url.h>
+#include <libavutil/avstring.h>
+#include <libavutil/dict.h>
+#include <libavutil/error.h>
+#include <libavutil/log.h>
+#include <libavutil/mem.h>
+#include <libavutil/time.h>
 
 #include "avio_internal.h"
+#include "common.h"
 #include "config_components.h"
-#include "dashenc_pool.h"
 #include "dashenc_stats.h"
 #if CONFIG_HTTP_PROTOCOL
 #include "http.h"
 #endif
+
+/* clang-tidy complains about pthread types, because they're not included directly, but this is intended */
+#define pthread_mutex_t /* NOLINT(misc-include-cleaner) */ pthread_mutex_t
+#define pthread_t /* NOLINT(misc-include-cleaner) */ pthread_t
+#define pthread_cond_t /* NOLINT(misc-include-cleaner) */ pthread_cond_t
+#define pthread_attr_t /* NOLINT(misc-include-cleaner) */ pthread_attr_t
 
 typedef struct buffer_data {
     uint8_t *buf;

@@ -1,11 +1,15 @@
 #include "dashenc_stats.h"
 
+#include <inttypes.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "libavutil/avstring.h"
-#include "libavutil/time.h"
+#include <libavutil/avstring.h>
+#include <libavutil/log.h>
+#include <libavutil/mem.h>
+#include <libavutil/time.h>
 
 /**
  * Call his method with a value and it will print the min, max and average value once every logInterval.
