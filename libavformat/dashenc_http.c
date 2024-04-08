@@ -135,7 +135,7 @@ static void release_request(connection *conn) {
         av_free(chunk->buf);
         av_free(chunk);
     }
-    av_freep(&conn->chunks.storage);
+    av_freep((void*)&conn->chunks.storage);
     conn->chunks.nr_of_chunks = 0;
     conn->chunks.last_chunk_written = 0;
     pthread_mutex_unlock(&conn->chunks.mutex);
@@ -795,7 +795,7 @@ void pool_write_flush(const unsigned char *buf, const int size, const int conn_n
     memcpy(new_chunk->buf, buf, size);
 
     pthread_mutex_lock(&conn->chunks.mutex);
-    av_dynarray_add(&conn->chunks.storage, &conn->chunks.nr_of_chunks, new_chunk);
+    av_dynarray_add((void*)&conn->chunks.storage, &conn->chunks.nr_of_chunks, new_chunk);
     pthread_cond_signal(&conn->chunks.cv);
     pthread_mutex_unlock(&conn->chunks.mutex);
 }
