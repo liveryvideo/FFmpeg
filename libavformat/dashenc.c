@@ -2448,8 +2448,8 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
             c->total_duration = av_rescale_q(pkt->pts - os->first_pts, st->time_base, AV_TIME_BASE_Q);
             if ((!c->use_timeline || !c->use_template) && os->last_duration != 0 &&
                     (c->last_duration < os->last_duration*9/10 || c->last_duration > os->last_duration*11/10)) {
-                    av_log(s, AV_LOG_WARNING, "Segment durations differ too much, enable use_timeline "
-                                              "and use_template, or keep a stricter keyframe interval\n");
+                    av_log(s, AV_LOG_WARNING, "Segment duration (%" PRId64 ") differ too much from previous (%" PRId64 ") , enable use_timeline "
+                                              "and use_template, or keep a stricter keyframe interval\n", c->last_duration, os->last_duration);
             }
 
             if (c->write_prft && os->producer_reference_time.wallclock && !os->producer_reference_time_str[0])
