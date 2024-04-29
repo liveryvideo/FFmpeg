@@ -800,7 +800,7 @@ void pool_write_flush(const unsigned char *buf, const int size, const int conn_n
     pthread_mutex_unlock(&conn->chunks.mutex);
 }
 
-static int write_packet(void *opaque, uint8_t *buf, int buf_size) {
+static int write_packet(void *opaque, const uint8_t *buf, int buf_size) {
     struct buffer_data *buffer_data = (struct buffer_data *)opaque;
     while (buf_size > buffer_data->room) {
         int64_t offset = buffer_data->ptr - buffer_data->buf;
