@@ -10,7 +10,6 @@
 
 #include <errno.h>
 #include <inttypes.h>
-#include <limits.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -109,12 +108,64 @@ static pthread_mutex_t connections_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t connections_thread_exit_cv = PTHREAD_COND_INITIALIZER;
 
 const static int max_idle_connections = 15;
-static _Atomic int nr_of_connections = 0;
-static int total_nr_of_connections = 0; /* nr of connections made in total */
 
 static stats *chunk_write_time_stats;
 static stats *conn_count_stats;
 static _Atomic bool should_stop = false;
+
+enum {
+    kConnectionNumbersBitmapSize = 1 << 8
+};
+
+static int nr_of_connections = 0;
+static pthread_mutex_t connection_numbers_bitmap_mutex = PTHREAD_MUTEX_INITIALIZER;
+typedef uint32_t ConnectionNumbersBitmapType;
+static ConnectionNumbersBitmapType connection_numbers_bitmap[kConnectionNumbersBitmapSize];
+
+#include <strings.h>
+#define ffz(x) ffs(~(x))
+
+static int get_connection_number(void) {
+    pthread_mutex_lock(&connection_numbers_bitmap_mutex);
+    for (int i = 0; i < kConnectionNumbersBitmapSize; i++) {
+        if (connection_numbers_bitmap[i] != ~0U) {
+            const int bit = ffz(connection_numbers_bitmap[i]) - 1; /* ffs return bit numbers in range 1-32 */
+            if (bit != -1) {
+                connection_numbers_bitmap[i] |= (1U << bit);
+                nr_of_connections++;
+                pthread_mutex_unlock(&connection_numbers_bitmap_mutex);
+
+                const int connection_number = (i << sizeof(ConnectionNumbersBitmapType)) + bit;
+                av_log(NULL, AV_LOG_INFO, "Claim connection id %d\n", connection_number);
+                return connection_number;
+            }
+        }
+    }
+
+    pthread_mutex_unlock(&connection_numbers_bitmap_mutex);
+    return -1;
+}
+
+static void free_connection_number(const int connection_number) {
+    if (connection_number < 0 || connection_number > (kConnectionNumbersBitmapSize << sizeof(ConnectionNumbersBitmapType))) {
+        av_log(NULL, AV_LOG_ERROR, "Trying to release invalid connection number: %d", connection_number);
+        return;
+    }
+
+    av_log(NULL, AV_LOG_INFO, "Release connection id %d\n", connection_number);
+    pthread_mutex_lock(&connection_numbers_bitmap_mutex);
+    const int index = connection_number >> sizeof(ConnectionNumbersBitmapType);
+    const int bit = connection_number - (index << sizeof(ConnectionNumbersBitmapType));
+    connection_numbers_bitmap[index] &= ~(1U << bit);
+    nr_of_connections--;
+    pthread_mutex_unlock(&connection_numbers_bitmap_mutex);
+}
+
+static void print_nr_connections_stats(void) {
+    pthread_mutex_lock(&connection_numbers_bitmap_mutex);
+    print_complete_stats(conn_count_stats, nr_of_connections);
+    pthread_mutex_unlock(&connection_numbers_bitmap_mutex);
+}
 
 //defined here because it has a circular dependency with retry()
 static void *thr_io_close(connection *conn);
@@ -199,7 +250,7 @@ static bool write_chunk_if_available(connection *conn) {
     }
 
     print_complete_stats(chunk_write_time_stats, US_TO_MS(av_gettime()) - start_time_ms);
-    print_complete_stats(conn_count_stats, nr_of_connections);
+    print_nr_connections_stats();
 
     return true;
 }
@@ -323,7 +374,7 @@ static void retry(connection *conn) { /* NOLINT(misc-no-recursion) */
 static void remove_from_list(connection *conn) {
     av_log(NULL, AV_LOG_INFO, "Removing conn_nr: %d\n", conn->nr);
     LIST_REMOVE(conn, entries);
-    nr_of_connections--;
+    free_connection_number(conn->nr);
 }
 
 /**
@@ -586,16 +637,8 @@ static connection *claim_connection(const char *url, const int need_new_connecti
 
         pthread_mutex_init(&conn->open_mutex, NULL);
 
-        //TODO(LIV-2683): In theory when we have an overflow of total_nr_of_connections we could claim a connection number that is still in use.
-        conn_nr = total_nr_of_connections;
+        conn_nr = get_connection_number();
         conn->nr = conn_nr;
-        nr_of_connections++;
-        total_nr_of_connections++;
-
-        if (total_nr_of_connections == INT_MAX) {
-            av_log(NULL, AV_LOG_FATAL, "total_nr_of_connections overflow\n");
-            abort();
-        }
 
         pthread_mutex_init(&conn->chunks.mutex, NULL);
         pthread_cond_init(&conn->chunks.cv, NULL);
