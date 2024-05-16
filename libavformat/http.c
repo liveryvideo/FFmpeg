@@ -23,6 +23,7 @@
 #include "config.h"
 #include "config_components.h"
 
+#include <sys/time.h>
 #include <time.h>
 #if CONFIG_ZLIB
 #include <zlib.h>
@@ -190,7 +191,7 @@ static int64_t nonce_birth_time = -1;
 static pthread_mutex_t nonce_birth_time_lock = PTHREAD_MUTEX_INITIALIZER;
 static char current_nonce[300];
 
-static void http_invalidate_auth(HTTPAuthState *s);
+static void http_invalidate_auth(URLContext *h, HTTPAuthState *s);
 static int http_connect(URLContext *h, const char *path, const char *local_path,
                         const char *hoststr, const char *auth,
                         const char *proxyauth);
@@ -473,7 +474,7 @@ int ff_http_do_new_request2(URLContext *h, const char *uri, AVDictionary **opts)
     char hostname1[1024], hostname2[1024], proto1[10], proto2[10];
     int port1, port2;
 
-    http_invalidate_auth(&s->auth_state);
+    http_invalidate_auth(h, &s->auth_state);
     s->start_time_ms = US_TO_MS(av_gettime());
 
     if (!h->prot ||
@@ -1418,15 +1419,30 @@ static int64_t nonce_expire_time = ((int64_t)60 * 60 - 3) * 1000000; /* 1 hour -
                                                                  * know exact nonce birth time, so we
                                                                  * start trying to acquire new one 3
                                                                  * seconds in advance */
-void av_set_nonce_expire_time(int64_t time)
+void av_set_nonce_expire_time(const int64_t time)
 {
     nonce_expire_time = time;
 }
 
-static void http_invalidate_auth(HTTPAuthState *s)
+static void http_invalidate_auth(URLContext *h, HTTPAuthState *s)
 {
-    if (unlikely(av_gettime() - s->used_nonce_birth_time > nonce_expire_time))
+    if (unlikely(av_gettime() - s->used_nonce_birth_time > nonce_expire_time)) {
+        struct timeval nonce_birth_time = {
+            .tv_sec = US_TO_S(s->used_nonce_birth_time),
+            .tv_usec = s->used_nonce_birth_time - S_TO_US(US_TO_S(s->used_nonce_birth_time))
+        };
+
+        char tmp_buf[64] = {0};
+        struct tm local_nonce_birth_time = {0};
+        localtime_r(&nonce_birth_time, &local_nonce_birth_time);
+        strftime(tmp_buf, sizeof(tmp_buf), "%Y-%m-%d %H:%M:%S", &local_nonce_birth_time);
+
+        char *time_buf = av_asprintf("%s.%06lu", tmp_buf, nonce_birth_time.tv_usec);
+        av_log(h, AV_LOG_INFO, "Nonce born at %s has expired, requesting for a new one\n", time_buf);
+        av_free(time_buf);
+
         s->auth_type = HTTP_AUTH_NONE;
+    }
 }
 
 static int http_connect(URLContext *h, const char *path, const char *local_path,
