@@ -16,7 +16,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include <sys/queue.h>
 
@@ -77,9 +76,9 @@ typedef struct connection {
     AVIOContext *out;        /* The TCP connection */
     _Atomic bool claimed;             /* This connection is claimed for a specific request */
 
-    bool req_opened;         /* If true the request is opened and more data can be written to it, only accessed from w_thread */
-    bool opened;     /* TCP connection (out) is opened */
-    bool open_error; /* If true the connection could not be opened */
+    _Atomic bool req_opened;         /* If true the request is opened and more data can be written to it, only accessed from w_thread */
+    _Atomic bool opened;     /* TCP connection (out) is opened */
+    _Atomic bool open_error; /* If true the connection could not be opened */
     pthread_mutex_t open_mutex;
 
     _Atomic int64_t release_time;    /* Time the last request of the connection has finished */
@@ -114,7 +113,8 @@ static stats *conn_count_stats;
 static _Atomic bool should_stop = false;
 
 enum {
-    kConnectionNumbersBitmapSize = 1 << 8
+    kConnectionNumbersBitmapSize = 1 << 8,
+    kRetrySleepInterval = 100 * kOneMillisecond,
 };
 
 static int nr_of_connections = 0;
@@ -305,7 +305,7 @@ static int io_open_for_retry(connection *conn) {
     if (ret != 0) {
         const int64_t curr_time_ms = US_TO_MS(av_gettime());
         const int64_t idle_tims_ms = curr_time_ms - conn->release_time;
-        av_log(ctx, AV_LOG_WARNING, "io_open_for_retry error conn_nr: %d, idle_time: %"PRId64", error: %d, retry_nr: %d, url: %s\n", conn->nr, idle_tims_ms, ret, conn->retry_nr, conn->url);
+        av_log(ctx, AV_LOG_WARNING, "io_open_for_retry error conn_nr: %d, idle_time: %"PRId64", error: %s, retry_nr: %d, url: %s\n", conn->nr, idle_tims_ms, av_err2str(ret), conn->retry_nr, conn->url);
         goto error_close;
     }
 
@@ -336,7 +336,7 @@ static void retry(connection *conn) { /* NOLINT(misc-no-recursion) */
         return;
     }
 
-    usleep(kOneSecond);
+    av_usleep(kRetrySleepInterval);
 
     av_log(NULL, AV_LOG_INFO, "Request retry waiting for segment to be completely recorded. request: %s, attempt: %d, conn_nr: %d.\n",
             conn->url, conn->retry_nr, conn->nr);
@@ -344,7 +344,7 @@ static void retry(connection *conn) { /* NOLINT(misc-no-recursion) */
     int chunk_wait_timeout = kRetryCount;
     // Wait until all chunks are recorded
     while (!conn->chunks_done && chunk_wait_timeout > 0) {
-        usleep(kOneSecond);
+        av_usleep(kRetrySleepInterval);
         chunk_wait_timeout --;
     }
     if (!conn->chunks_done) {
@@ -414,18 +414,13 @@ static void *thr_io_close(connection *conn) { /* NOLINT(misc-no-recursion) */
 
     av_log(NULL, AV_LOG_INFO, "thr_io_close conn_nr: %d, out_addr: %p \n", conn->nr, conn->out);
 
-    pthread_mutex_lock(&conn->open_mutex);
-    bool open_error = conn->open_error;
-    pthread_mutex_unlock(&conn->open_mutex);
-    if (open_error) {
+    if (conn->open_error) {
         ret = -1;
         response_code = 0;
     } else {
         URLContext *http_url_context = ffio_geturlcontext(conn->out);
         if (http_url_context == NULL) {
-            pthread_mutex_lock(&conn->open_mutex);
             conn->open_error = true;
-            pthread_mutex_unlock(&conn->open_mutex);
             ret = -1;
             response_code = 0;
         } else {
@@ -457,10 +452,7 @@ static void *thr_io_close(connection *conn) { /* NOLINT(misc-no-recursion) */
         connection_exit(conn);
     }
 
-    pthread_mutex_lock(&conn->open_mutex);
     conn->req_opened = false;
-    pthread_mutex_unlock(&conn->open_mutex);
-
     return NULL;
 }
 
@@ -487,16 +479,13 @@ static int open_request_if_needed(connection *conn) {
             goto error;
         }
 
-        conn->req_opened = true;
         conn->opened = true;
-        pthread_mutex_unlock(&conn->open_mutex);
-        return conn->nr;
+        goto exit_opened;
     }
-    pthread_mutex_unlock(&conn->open_mutex);
 
     http_url_context = ffio_geturlcontext(conn->out);
     if (http_url_context == NULL) {
-        av_log(conn->s, AV_LOG_WARNING, "Could not get http_url_context!\n");
+        av_log(conn->s, AV_LOG_ERROR, "Could not get http_url_context!\n");
         goto error_close;
     }
 
@@ -505,29 +494,27 @@ static int open_request_if_needed(connection *conn) {
 
     ret = ff_http_do_new_request(http_url_context, conn->url);
     if (ret != 0) {
-        const int64_t curr_time_ms = av_gettime() / 1000;
+        const int64_t curr_time_ms = US_TO_MS(av_gettime());
         const int64_t idle_tims_ms = curr_time_ms - conn->release_time;
-        av_log(conn->s, AV_LOG_WARNING, "pool_io_open error conn_nr: %d, idle_time: %"PRId64", error: %d, name: %s\n", conn->nr, idle_tims_ms, ret, conn->url);
+        av_log(conn->s, AV_LOG_WARNING, "pool_io_open error conn_nr: %d, idle_time: %"PRId64", error: %s, name: %s\n", conn->nr, idle_tims_ms, av_err2str(ret), conn->url);
         goto error_close;
     }
 
-    pthread_mutex_lock(&conn->open_mutex);
+exit_opened:
     conn->req_opened = true;
     pthread_mutex_unlock(&conn->open_mutex);
     return conn->nr;
 
 error_close:
-    pthread_mutex_lock(&conn->open_mutex);
     ff_format_io_close(conn->s, &conn->out);
+    conn->opened = false;
+
 error:
     abort_if_needed(conn->must_succeed);
     conn->open_error = true;
+    conn->req_opened = false;
     pthread_mutex_unlock(&conn->open_mutex);
-    if (!conn->retry) {
-        return ret;
-    }
-
-    return conn->nr;
+    return conn->retry ? conn->nr : ret;
 }
 
 /**
@@ -535,6 +522,7 @@ error:
  * It is supposed to be passed to pthread_create.
  */
 static void *thr_io_write(void *arg) {
+    int ret = 0;
     connection *conn = (connection *)arg;
     //https://computing.llnl.gov/tutorials/pthreads/#ConditionVariables
 
@@ -550,7 +538,12 @@ static void *thr_io_write(void *arg) {
         }
         pthread_mutex_unlock(&conn->chunks.mutex);
 
-        open_request_if_needed(conn);
+        ret = open_request_if_needed(conn);
+        if (ret < 0) {
+            av_log(conn->s, AV_LOG_ERROR, "failed to open request, conn_nr: %d\n", conn->nr);
+            continue;
+        }
+
         while (write_chunk_if_available(conn)) {}
 
         if (conn->chunks_done) {
@@ -560,7 +553,7 @@ static void *thr_io_write(void *arg) {
         }
     }
 
-    av_log(NULL, AV_LOG_INFO, "dashenc_http thread done, conn_nr: %d.\n", conn->nr);
+    av_log(conn->s, AV_LOG_INFO, "dashenc_http thread done, conn_nr: %d.\n", conn->nr);
     return NULL;
 }
 
