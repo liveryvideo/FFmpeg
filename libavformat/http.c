@@ -1414,11 +1414,7 @@ static void bprint_escaped_path(AVBPrint *bp, const char *path)
 
 #define unlikely(x) __builtin_expect(!!(x),0)
 
-static int64_t nonce_expire_time = ((int64_t)60 * 60 - 3) * 1000000; /* 1 hour - 3 second by default.
-                                                                 * We're doing that -3 since we don't
-                                                                 * know exact nonce birth time, so we
-                                                                 * start trying to acquire new one 3
-                                                                 * seconds in advance */
+static int64_t nonce_expire_time;
 void av_set_nonce_expire_time(const int64_t time)
 {
     nonce_expire_time = time;
@@ -1426,7 +1422,7 @@ void av_set_nonce_expire_time(const int64_t time)
 
 static void http_invalidate_auth(URLContext *h, HTTPAuthState *s)
 {
-    if (unlikely(av_gettime() - s->used_nonce_birth_time > nonce_expire_time)) {
+    if (s->auth_type != HTTP_AUTH_NONE && unlikely(av_gettime() - s->used_nonce_birth_time > nonce_expire_time)) {
         struct timeval nonce_birth_time = {
             .tv_sec = US_TO_S(s->used_nonce_birth_time),
             .tv_usec = s->used_nonce_birth_time - S_TO_US(US_TO_S(s->used_nonce_birth_time))
