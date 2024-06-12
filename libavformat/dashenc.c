@@ -1300,7 +1300,7 @@ static int write_manifest(AVFormatContext *s, int final)
     write_time(out, c->max_segment_duration);
     avio_printf(out, "\"\n");
     avio_printf(out, "\tminBufferTime=\"");
-    write_time(out, c->ldash && c->max_gop_size ? c->seg_duration : c->last_duration * 2);
+    write_time(out, kOneSecond);
     avio_printf(out, "\">\n");
     avio_printf(out, "\t<ProgramInformation>\n");
     if (title) {
