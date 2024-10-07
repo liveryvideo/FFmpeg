@@ -3066,6 +3066,14 @@ AVRational av_stream_get_codec_timebase(const AVStream *st);
  * @param time     new time to set nonce to
  */
 void av_set_nonce_expire_time(int64_t time);
+
+/**
+ * Change target latency time
+ *
+ * @param latency     new target latency time to set to
+ * @param deviations_allowed
+ */
+void av_set_target_latency(int64_t latency, int deviations_allowed);
 /**
  * @}
  */
