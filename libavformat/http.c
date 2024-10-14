@@ -19,6 +19,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <stdatomic.h>
+
 #include "common.h"
 #include "config.h"
 #include "config_components.h"
@@ -1414,7 +1416,7 @@ static void bprint_escaped_path(AVBPrint *bp, const char *path)
 
 #define unlikely(x) __builtin_expect(!!(x),0)
 
-static int64_t nonce_expire_time;
+static atomic_int_fast64_t nonce_expire_time;
 void av_set_nonce_expire_time(const int64_t time)
 {
     nonce_expire_time = time;
