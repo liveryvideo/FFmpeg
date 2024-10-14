@@ -20,6 +20,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <stdatomic.h>
+
 #include "config.h"
 #include "config_components.h"
 #include <time.h>
@@ -2078,6 +2080,15 @@ static inline void dashenc_delete_media_segments(AVFormatContext *s, OutputStrea
     memmove(os->segments, os->segments + remove_count, os->nb_segments * sizeof(*os->segments));
 }
 
+static atomic_int deviations_happened = 0;
+static atomic_int deviations_allowed = 0;
+static atomic_int_fast64_t target_latency = 0;
+
+void av_set_target_latency(int64_t latency, int deviations_allowed) {
+    target_latency = latency;
+    deviations_allowed = deviations_allowed;
+}
+
 static int dash_flush(AVFormatContext *s, int final, int stream)
 {
     DASHContext *c = s->priv_data;
@@ -2166,6 +2177,16 @@ static int dash_flush(AVFormatContext *s, int final, int stream)
         //Calculate segment write start time deviation
         //curr_time - availability_start_time + written_segment_times
         const int64_t deviation = US_TO_MS(av_gettime() - (c->availability_start_time_us + (os->segment_index - 1) * duration));
+
+        if (deviation > target_latency) {
+            deviations_happened++;
+            if (deviations_happened > deviations_allowed) {
+                av_log(s, AV_LOG_FATAL, "Current deviation %" PRId64 " is higher then target latency %" PRId64 " aborting", deviation, target_latency);
+                abort();
+            }
+        } else {
+            deviations_happened = 0;
+        }
 
         print_complete_stats(c->seg_start_deviation_stats[i], deviation);
     }
