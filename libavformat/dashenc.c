@@ -2178,7 +2178,7 @@ static int dash_flush(AVFormatContext *s, int final, int stream)
         //curr_time - availability_start_time + written_segment_times
         const int64_t deviation = US_TO_MS(av_gettime() - (c->availability_start_time_us + (os->segment_index - 1) * duration));
 
-        if (deviation > target_latency) {
+        if (FFABS(deviation) > target_latency) {
             deviations_happened++;
             if (deviations_happened > deviations_allowed) {
                 av_log(s, AV_LOG_FATAL, "Current deviation %" PRId64 " is higher then target latency %" PRId64 " aborting", deviation, target_latency);
