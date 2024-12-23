@@ -2089,6 +2089,11 @@ void av_set_target_latency(int64_t latency, int deviations_allowed) {
     deviations_allowed = deviations_allowed;
 }
 
+static atomic_int availability_time_offset = -1;
+void av_set_availability_time_offset(int64_t offset) {
+    availability_time_offset = offset;
+}
+
 static int dash_flush(AVFormatContext *s, int final, int stream)
 {
     DASHContext *c = s->priv_data;
@@ -2427,8 +2432,9 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
             break;
         }
 
-         os->availability_time_offset = ((double) os->seg_duration -
-                                         frame_duration) / AV_TIME_BASE;
+         os->availability_time_offset = availability_time_offset == -1 ?
+                                        ((double) os->seg_duration - frame_duration) / AV_TIME_BASE :
+                                        US_TO_S(availability_time_offset);
         as->max_frag_duration = FFMAX(frame_duration, as->max_frag_duration);
     }
 
