@@ -241,6 +241,20 @@ static const struct codec_string {
     { AV_CODEC_ID_NONE }
 };
 
+static atomic_int deviations_happened = 0;
+static atomic_int deviations_allowed = 0;
+static atomic_int_fast64_t target_latency = 0;
+
+void av_set_target_latency(int64_t latency, int deviations_allowed) {
+    target_latency = latency;
+    deviations_allowed = deviations_allowed;
+}
+
+static atomic_int availability_time_offset = -1;
+void av_set_availability_time_offset(int64_t offset) {
+    availability_time_offset = offset;
+}
+
 /* Still being used by deleting of old files */
 static int dashenc_io_open(AVFormatContext *s, AVIOContext **pb, char *filename,
                            AVDictionary **options) {
@@ -1314,6 +1328,10 @@ static int write_manifest(AVFormatContext *s, int final)
 
     avio_printf(out, "\t<ServiceDescription id=\"0\">\n");
     if (!final && c->target_latency && c->target_latency_refid >= 0) {
+        if (c->target_latency != target_latency) {
+            c->target_latency = target_latency;
+        }
+
         avio_printf(out, "\t\t<Latency target=\"%"PRId64"\"", c->target_latency / 1000);
         if (s->nb_streams > 1)
             avio_printf(out, " referenceId=\"%d\"", c->target_latency_refid);
@@ -2078,20 +2096,6 @@ static inline void dashenc_delete_media_segments(AVFormatContext *s, OutputStrea
 
     os->nb_segments -= remove_count;
     memmove(os->segments, os->segments + remove_count, os->nb_segments * sizeof(*os->segments));
-}
-
-static atomic_int deviations_happened = 0;
-static atomic_int deviations_allowed = 0;
-static atomic_int_fast64_t target_latency = 0;
-
-void av_set_target_latency(int64_t latency, int deviations_allowed) {
-    target_latency = latency;
-    deviations_allowed = deviations_allowed;
-}
-
-static atomic_int availability_time_offset = -1;
-void av_set_availability_time_offset(int64_t offset) {
-    availability_time_offset = offset;
 }
 
 static int dash_flush(AVFormatContext *s, int final, int stream)
