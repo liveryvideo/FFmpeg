@@ -33,7 +33,7 @@
 #include "avio_internal.h"
 #include "common.h"
 #include "config_components.h"
-#include "dashenc_stats.h"
+#include "stats.h"
 #if CONFIG_HTTP_PROTOCOL
 #include "http.h"
 #endif
