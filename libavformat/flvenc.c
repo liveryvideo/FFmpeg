@@ -855,26 +855,7 @@ static int flv_init(struct AVFormatContext *s)
 
     bitrates = av_calloc(s->nb_streams, sizeof(int));
     for (int i = 0; i < s->nb_streams; i++) {
-        switch (s->streams[i]->codecpar->codec_type) {
-        case AVMEDIA_TYPE_VIDEO:
-            if (flv->video_par == NULL) {
-                av_log(s, AV_LOG_ERROR, "Video parameters are missing\n");
-                continue;
-            }
-            bitrates[i] = flv->video_par->bit_rate;
-            break;
-
-        case AVMEDIA_TYPE_AUDIO:
-            if (flv->audio_par != NULL) {
-                av_log(s, AV_LOG_ERROR, "Audio parameters are missing\n");
-                continue;
-            }
-            bitrates[i] = flv->audio_par->bit_rate;
-            break;
-        default:
-            av_log(s, AV_LOG_ERROR, "Unknown stream type\n");
-            break;
-        }
+        bitrates[i] = s->streams[i]->codecpar->bit_rate;
     }
 
     flv->s_ctx = alloc_new_stats_context(flv->output_name, s->nb_streams, bitrates);

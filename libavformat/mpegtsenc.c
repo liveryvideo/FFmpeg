@@ -40,6 +40,8 @@
 #include "internal.h"
 #include "mpegts.h"
 #include "mux.h"
+#include "stats.h"
+#include "stats_context.h"
 
 #define PCR_TIME_BASE 27000000
 
@@ -130,6 +132,9 @@ typedef struct MpegTSWrite {
     uint8_t provider_name[256];
 
     int omit_video_pes_length;
+
+    const char *output_name;
+    StatsContext *s_ctx;
 } MpegTSWrite;
 
 /* a PES packet header is generated every DEFAULT_PES_HEADER_FREQ packets */
@@ -1097,6 +1102,7 @@ static int mpegts_init(AVFormatContext *s)
     const char *provider_name;
     int i, j;
     int ret;
+    int *bitrates;
 
     if (ts->m2ts_mode == -1) {
         if (av_match_ext(s->url, "m2ts")) {
@@ -1300,6 +1306,18 @@ static int mpegts_init(AVFormatContext *s)
     if (ts->flags & MPEGTS_FLAG_NIT)
         av_log(s, AV_LOG_VERBOSE, ", nit every %"PRId64" ms", av_rescale(ts->nit_period, 1000, PCR_TIME_BASE));
     av_log(s, AV_LOG_VERBOSE, "\n");
+
+    bitrates = av_calloc(s->nb_streams, sizeof(int));
+    for (int i = 0; i < s->nb_streams; i++) {
+        bitrates[i] = s->streams[i]->codecpar->bit_rate;
+    }
+
+    ts->s_ctx = alloc_new_stats_context(ts->output_name, s->nb_streams, bitrates);
+    av_free(bitrates);
+    if (ts->s_ctx == NULL) {
+        av_log(s, AV_LOG_ERROR, "Failed to allocate stats context\n");
+        return AVERROR(ENOMEM);
+    }
 
     return 0;
 }
@@ -2227,6 +2245,8 @@ static int mpegts_write_packet_internal(AVFormatContext *s, AVPacket *pkt)
 
     av_free(data);
 
+    print_stats(ts->s_ctx, st->codecpar->codec_type, pkt);
+
     return 0;
 }
 
@@ -2297,6 +2317,8 @@ static void mpegts_deinit(AVFormatContext *s)
         av_freep(&service);
     }
     av_freep(&ts->services);
+
+    free_stats_context(ts->s_ctx);
 }
 
 static int mpegts_check_bitstream(AVFormatContext *s, AVStream *st,
@@ -2387,6 +2409,8 @@ static const AVOption options[] = {
       OFFSET(sdt_period_us), AV_OPT_TYPE_DURATION, { .i64 = SDT_RETRANS_TIME * 1000LL }, 0, INT64_MAX, ENC },
     { "nit_period", "NIT retransmission time limit in seconds",
       OFFSET(nit_period_us), AV_OPT_TYPE_DURATION, { .i64 = NIT_RETRANS_TIME * 1000LL }, 0, INT64_MAX, ENC },
+    { "output_name", "Output name, used as a prefix to the audio/video processing stats name",
+      OFFSET(output_name), AV_OPT_TYPE_STRING, { 0 }, 0, 0, ENC },
     { NULL },
 };
 

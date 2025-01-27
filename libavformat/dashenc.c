@@ -1909,8 +1909,7 @@ static int dash_init(AVFormatContext *s)
 
     bitrates = av_calloc(s->nb_streams, sizeof(int));
     for (int i = 0; i < s->nb_streams; i++) {
-        OutputStream *os = &c->streams[i];
-        bitrates[i] = os->bit_rate;
+        bitrates[i] = s->streams[i]->codecpar->bit_rate;
     }
 
     c->s_ctx = alloc_new_stats_context(c->output_name, s->nb_streams, bitrates);
