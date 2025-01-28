@@ -18,6 +18,9 @@ typedef struct stats {
 void print_complete_stats(stats *stats, int64_t value);
 void print_total_stats(stats *stats, int64_t value);
 stats *init_stats(const char *name, int logInterval);
+stats *init_stats_prefix(const char *name, const char *prefix, int logInterval);
 void free_stats(stats *stats);
+
+int64_t get_init_time(const AVPacket *pkt);
 
 #endif /* AVFORMAT_DASH_STATS_H */

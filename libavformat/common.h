@@ -15,5 +15,6 @@ enum TimeConstants {
 #define S_TO_MS(x) (((int64_t)x) * kOneMillisecond)
 
 enum MiscConstants {
+    kDecimalBase = 10,
     kDefaultStatsTime = 5 * kOneSecond,
 };

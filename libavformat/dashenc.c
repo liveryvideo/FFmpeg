@@ -51,7 +51,6 @@
 #include "common.h"
 #include "dash.h"
 #include "dashenc_http.h"
-#include "dashenc_stats.h"
 #include "hlsplaylist.h"
 #if CONFIG_HTTP_PROTOCOL
 #include "http.h"
@@ -62,6 +61,8 @@
 #include "os_support.h"
 #include "url.h"
 #include "vpcc.h"
+#include "stats.h"
+#include "stats_context.h"
 
 typedef enum {
     SEGMENT_TYPE_AUTO = 0,
@@ -146,7 +147,6 @@ typedef struct OutputStream {
     int total_pkt_size;
     int64_t total_pkt_duration;
     int muxer_overhead;
-    stats *bitrate_stats; /* initialized in dash_init() */
     int conn_nr; /* initialized to -1 in dash_init() */
     int frag_type;
     int64_t gop_size;
@@ -206,9 +206,7 @@ typedef struct DASHContext {
     int finish_stream;
     int new_seg_on_keyframe;
     int first_mpd_written; /* used to log some details the first time the mpd is written */
-    stats *audio_time_stats;
-    stats *video_time_stats;
-    stats *subtitle_time_stats;
+    StatsContext *s_ctx;
 
     int seg_start_deviation_stats_size;
     stats **seg_start_deviation_stats;
@@ -227,6 +225,8 @@ typedef struct DASHContext {
     int64_t update_period;
 
     int last_written_segment_index;
+
+    const char *output_name;
 } DASHContext;
 
 static const struct codec_string {
@@ -688,14 +688,11 @@ static void dash_free(AVFormatContext *s)
         av_freep(&os->single_file_name);
         av_freep(&os->init_seg_name);
         av_freep(&os->media_seg_name);
-        free_stats(os->bitrate_stats);
         if (c->seg_start_deviation_stats_size > i)  {
             free_stats(c->seg_start_deviation_stats[i]);
         }
     }
-    free_stats(c->audio_time_stats);
-    free_stats(c->video_time_stats);
-    free_stats(c->subtitle_time_stats);
+    free_stats_context(c->s_ctx);
     av_freep(&c->streams);
 
     pool_free_all(s);
@@ -866,7 +863,7 @@ static int write_adaptation_set(AVFormatContext *s, AVIOContext *out, int as_ind
     int i;
     int j = 0, target_duration = 0;
 
-    char *media_type = NULL;
+    const char *media_type = NULL;
     if (as->media_type == AVMEDIA_TYPE_VIDEO) {
         media_type = "video";
     } else if (as->media_type == AVMEDIA_TYPE_AUDIO) {
@@ -1538,6 +1535,7 @@ static int dash_init(AVFormatContext *s)
     int ret = 0, i;
     char *ptr;
     char basename[1024];
+    int *bitrates;
 
     pool_init();
 
@@ -1653,7 +1651,8 @@ static int dash_init(AVFormatContext *s)
         AVStream *st;
         AVDictionary *opts = NULL;
         char filename[1024];
-        char bitrate_str[100];
+        stats *stat;
+        char *name;
 
         os->bit_rate = s->streams[i]->codecpar->bit_rate;
         if (!os->bit_rate) {
@@ -1664,8 +1663,6 @@ static int dash_init(AVFormatContext *s)
                 return AVERROR(EINVAL);
         }
 
-        snprintf(bitrate_str, 100, "bitrate_stats: rep_%d_bitrate_%d, value", i, os->bit_rate);
-        os->bitrate_stats = init_stats(bitrate_str, kOneSecond);
         os->conn_nr = -1;
 
         // copy AdaptationSet language and role from stream metadata
@@ -1883,13 +1880,13 @@ static int dash_init(AVFormatContext *s)
         if (s->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
             c->nr_of_streams_to_flush++;
 
-        char *name = av_asprintf("seg_start_deviation_stream%d", i);
+        name = av_asprintf("seg_start_deviation_stream%d", i);
         if (name == NULL) {
             av_log(s, AV_LOG_ERROR, "Failed to allocate memory for seg_start_deviation_stream%d string\n", i);
             return AVERROR(ENOMEM);
         }
 
-        stats *stat = init_stats(name, kDefaultStatsTime);
+        stat = init_stats(name, kDefaultStatsTime);
         if (stat == NULL) {
             av_log(s, AV_LOG_ERROR, "Failed to allocate memory for stat\n");
             return AVERROR(ENOMEM);
@@ -1910,9 +1907,17 @@ static int dash_init(AVFormatContext *s)
     c->nr_of_streams_flushed = 0;
     c->target_latency_refid = -1;
 
-    c->audio_time_stats = init_stats("audio_processing", kDefaultStatsTime);
-    c->video_time_stats = init_stats("video_processing", kDefaultStatsTime);
-    c->subtitle_time_stats = init_stats("subtitle_processing", kDefaultStatsTime);
+    bitrates = av_calloc(s->nb_streams, sizeof(int));
+    for (int i = 0; i < s->nb_streams; i++) {
+        bitrates[i] = s->streams[i]->codecpar->bit_rate;
+    }
+
+    c->s_ctx = alloc_new_stats_context(c->output_name, s->nb_streams, bitrates);
+    av_free(bitrates);
+    if (c->s_ctx == NULL) {
+        av_log(s, AV_LOG_ERROR, "Failed to allocate stats context\n");
+        return AVERROR(ENOMEM);
+    }
 
     return 0;
 }
@@ -2126,6 +2131,7 @@ static int dash_flush(AVFormatContext *s, int final, int stream)
         OutputStream *os = &c->streams[i];
         int range_length, index_length = 0;
         int64_t duration;
+        int64_t deviation;
 
         if (!os->packets_written)
             continue;
@@ -2185,8 +2191,7 @@ static int dash_flush(AVFormatContext *s, int final, int stream)
 
         //Calculate segment write start time deviation
         //curr_time - availability_start_time + written_segment_times
-        const int64_t deviation = US_TO_MS(av_gettime() - (c->availability_start_time_us + (os->segment_index - 1) * duration));
-
+        deviation = US_TO_MS(av_gettime() - (c->availability_start_time_us + (os->segment_index - 1) * duration));
         if (FFABS(deviation) > target_latency) {
             deviations_happened++;
             if (deviations_happened > deviations_allowed) {
@@ -2246,76 +2251,6 @@ static int dash_flush(AVFormatContext *s, int final, int stream)
             ret = write_manifest(s, final);
     }
     return ret;
-}
-
-static const char *get_flow_string(const int64_t value) {
-    return value == LONG_MAX ? "Overflow" : "Underflow";
-}
-
-/**
- * Return the timestamp (in microseconds) that was added when the frame has entered FFmpeg.
- */
-static int64_t get_init_time(AVFormatContext *s, const AVPacket *pkt) {
-    size_t size = 0;
-    AVDictionary *dict = NULL;
-    AVDictionaryEntry* timeEntry = NULL;
-    int ret = 0;
-
-    const uint8_t *side_data = av_packet_get_side_data(pkt, AV_PKT_DATA_STRINGS_METADATA, &size);
-    if (!side_data || !size) {
-        av_log(s, AV_LOG_ERROR, "Packet doesn't contain AV_PKT_DATA_STRINGS_METADATA, pts: %ld", pkt->pts);
-        return AVERROR(ENOENT);
-    }
-
-    ret = av_packet_unpack_dictionary(side_data, size, &dict);
-    if (ret < 0) {
-        av_log(s, AV_LOG_ERROR, "Failed to unpack side_data dictionary, packet pts: %ld", pkt->pts);
-        return ret;
-    }
-
-    const char key[] = "init_time";
-    timeEntry = av_dict_get(dict, key, NULL, 0);
-    if (timeEntry) {
-        errno = 0;
-        const int64_t init_time = strtoll(timeEntry->value, NULL, 10);
-        av_dict_free(&dict);
-        if ((init_time == LONG_MAX || init_time == LONG_MIN) && errno == ERANGE) {
-            av_log(s, AV_LOG_ERROR, "%s during extracting %s from the packet with pts %ld, sd value: %s", get_flow_string(init_time), key, pkt->pts, timeEntry->value);
-            return AVERROR(ERANGE);
-        }
-
-        return init_time;
-    }
-
-    av_dict_free(&dict);
-    av_log(s, AV_LOG_ERROR, "Failed to find %s, packet pts: %ld", key, pkt->pts);
-    return AVERROR(ENOENT);
-}
-
-/**
- * Print statistics to the log.
- * LLS-79
- */
-static void print_stats(DASHContext *c, OutputStream *os, const AVPacket *pkt)
-{
-    const int64_t pkt_init_time = get_init_time(c, pkt);
-    if (pkt_init_time >= 0) {
-        //av_gettime_relative is in microseconds
-        const int64_t pTime = US_TO_MS(av_gettime_relative() - pkt_init_time);
-
-        if (os->ctx->streams[0]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            print_complete_stats(c->video_time_stats, pTime);
-        } else if (os->ctx->streams[0]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-            print_complete_stats(c->audio_time_stats, pTime);
-        } else if  (os->ctx->streams[0]->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE) {
-            print_complete_stats(c->subtitle_time_stats, pTime);
-        }
-
-    } else {
-        av_log(c, AV_LOG_INFO, "missing packet time ret: %"PRId64", codec: %s\n", pkt_init_time, os->codec_str);
-    }
-
-    print_total_stats(os->bitrate_stats, pkt->size*8);
 }
 
 static int dash_parse_prft(DASHContext *c, AVPacket *pkt)
@@ -2398,7 +2333,7 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
         c->start_time_s = MS_TO_S(US_TO_MS(curr_time));
 
         av_log(s, AV_LOG_INFO, "----------------------------------------\n");
-        rel_init_time = get_init_time(s, pkt);
+        rel_init_time = get_init_time(pkt);
         if (rel_init_time == 0) {
             av_log(s, AV_LOG_INFO, "Init time of pkt = 0, codec: %s. So skip optimising availabilityStartTime.\n", os->codec_str);
             c->availability_start_time_us = curr_time;
@@ -2550,6 +2485,11 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
         AVDictionary *opts = NULL;
         const char *proto = avio_find_protocol_name(s->url);
         int use_rename = proto && !strcmp(proto, "file");
+
+        int pts_diff;
+        int64_t pts_in_ms;
+        int64_t seg_start_time;
+
         if (os->segment_type == SEGMENT_TYPE_MP4)
             write_styp(os->ctx->pb);
         os->filename[0] = os->full_path[0] = os->temp_path[0] = '\0';
@@ -2584,13 +2524,9 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
             write_hls_media_playlist(os, s, pkt->stream_index, 0, prefetch_url, 0);
         }
 
-        //framerate of samplerate zou de pts increase moeten bepalen?
-        //time_base zou dat ook zijn
-        const int64_t seg_start_time = (int64_t) MS_TO_S((os->segment_index-1) * c->seg_duration);
-        //seg_start_time vs pts
-        const int64_t pts_in_ms = pkt->pts*S_TO_MS(st->time_base.num)/st->time_base.den;
-        const int pts_diff = seg_start_time - pts_in_ms;
-
+        seg_start_time = (int64_t) MS_TO_S((os->segment_index-1) * c->seg_duration);
+        pts_in_ms = pkt->pts*S_TO_MS(st->time_base.num)/st->time_base.den;
+        pts_diff = seg_start_time - pts_in_ms;
         av_log(NULL, AV_LOG_INFO, "pts_diff_stats: rep_%d_bitrate_%d, value: %d, pts: %"PRId64", timebase: %d/%d segment_index: %d, start_time: %" PRId64 ", pts_in_ms: %" PRId64 " \n",
             pkt->stream_index,
             os->bit_rate,
@@ -2608,7 +2544,7 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
         int len = 0;
         uint8_t *buf = NULL;
 
-        print_stats(c, os, pkt);
+        print_stats(c->s_ctx, os->ctx->streams[0]->codecpar->codec_type, pkt);
 
         avio_flush(os->ctx->pb);
         len = avio_get_dyn_buf (os->ctx->pb, &buf);
@@ -2747,6 +2683,7 @@ static const AVOption options[] = {
     { "utc_timing_url", "URL of the page that will return the UTC timestamp in ISO format", OFFSET(utc_timing_url), AV_OPT_TYPE_STRING, { 0 }, 0, 0, E },
     { "window_size", "number of segments kept in the manifest", OFFSET(window_size), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, INT_MAX, E },
     { "write_prft", "Write producer reference time element", OFFSET(write_prft), AV_OPT_TYPE_BOOL, {.i64 = -1}, -1, 1, E},
+    { "output_name", "Output name, used as a prefix to the audio/video processing stats name", OFFSET(output_name), AV_OPT_TYPE_STRING, { 0 }, 0, 0, E},
     { NULL },
 };
 
