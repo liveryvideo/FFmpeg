@@ -47,13 +47,13 @@ StatsContext *alloc_new_stats_context(const char *prefix, const int nb_streams, 
 
     s_ctx->nb_streams = nb_streams;
     for (int i = 0; i < nb_streams; i++) {
-        const char *bitrate_str = av_asprintf("bitrate_stats: rep_%d_bitrate_%d, value", i, bitrates[i]);
+        const char *bitrate_str = av_asprintf("bitrate_stats: %s.rep_%d_bitrate_%d, value", prefix, i, bitrates[i]);
         if (bitrate_str == NULL)  {
             av_log(NULL, AV_LOG_ERROR, "Failed to alloc bitrate str");
             goto error_free_bitrate_stats;
         }
 
-        s_ctx->bitrate_stats[i] = init_stats_prefix(bitrate_str, prefix, kOneSecond);
+        s_ctx->bitrate_stats[i] = init_stats(bitrate_str, kOneSecond);
         av_free(bitrate_str);
         if (s_ctx->bitrate_stats[i] == NULL)  {
             av_log(NULL, AV_LOG_ERROR, "Failed to init stats for bitrate %d", bitrates[i]);
