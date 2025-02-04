@@ -107,7 +107,7 @@ stats *init_stats(const char *name, int logInterval)
 stats *init_stats_prefix(const char *name, const char *prefix, const int logInterval) {
     stats *result_stats = NULL;
 
-    char * const stats_name = av_asprintf("%s_%s", prefix, name);
+    char * const stats_name = av_asprintf("%s.%s", prefix, name);
     if (stats_name == NULL) {
         av_log(NULL, AV_LOG_ERROR, "Failed to allocate stats name+prefix");
         return NULL;
