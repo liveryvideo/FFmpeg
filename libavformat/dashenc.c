@@ -2373,7 +2373,7 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
 
          os->availability_time_offset = availability_time_offset == -1 ?
                                         ((double) os->seg_duration - frame_duration) / AV_TIME_BASE :
-                                        US_TO_S(availability_time_offset);
+                                        US_TO_S((double)availability_time_offset);
         as->max_frag_duration = FFMAX(frame_duration, as->max_frag_duration);
     }
 
