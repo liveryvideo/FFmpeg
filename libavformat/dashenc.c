@@ -2152,7 +2152,7 @@ static int dash_flush(AVFormatContext *s, int final, int stream)
                 continue;
         }
 
-        av_log(s, AV_LOG_INFO, "segment_duration_stats: rep_%d_bitrate_%d, value: %" PRId64 "\n", i, os->bit_rate, os->last_duration);
+        av_log(s, AV_LOG_INFO, "segment_duration_stats: rep_%d_bitrate_%d, value: %" PRId64 " time: %" PRId64 "\n", i, os->bit_rate, os->last_duration, av_gettime());
 
         if (c->single_file)
             snprintf(os->full_path, sizeof(os->full_path), "%s%s", c->dirname, os->initfile);
@@ -2527,11 +2527,12 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
         seg_start_time = (int64_t) MS_TO_S((os->segment_index-1) * c->seg_duration);
         pts_in_ms = pkt->pts*S_TO_MS(st->time_base.num)/st->time_base.den;
         pts_diff = seg_start_time - pts_in_ms;
-        av_log(NULL, AV_LOG_INFO, "pts_diff_stats: rep_%d_bitrate_%d, value: %d, pts: %"PRId64", timebase: %d/%d segment_index: %d, start_time: %" PRId64 ", pts_in_ms: %" PRId64 " \n",
+        av_log(NULL, AV_LOG_INFO, "pts_diff_stats: rep_%d_bitrate_%d, value: %d, pts: %" PRId64 ", time: %" PRId64 " timebase: %d/%d segment_index: %d, start_time: %" PRId64 ", pts_in_ms: %" PRId64 " \n",
             pkt->stream_index,
             os->bit_rate,
             pts_diff,
             pkt->pts,
+            av_gettime(),
             st->time_base.num,
             st->time_base.den,
             os->segment_index,

@@ -24,7 +24,7 @@
 void print_complete_stats(stats *stats, int64_t value)
 {
     int64_t avgValue = 0;
-    int64_t curr_time = av_gettime_relative();
+    int64_t curr_time = av_gettime();
 
     if (stats == NULL) {
         return;
@@ -69,7 +69,7 @@ void print_complete_stats(stats *stats, int64_t value)
  */
 void print_total_stats(stats *stats, int64_t value)
 {
-    int64_t curr_time = av_gettime_relative();
+    int64_t curr_time = av_gettime();
 
     if (stats == NULL) {
         return;
