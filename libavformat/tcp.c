@@ -153,7 +153,6 @@ static int tcp_open(URLContext *h, const char *uri, int flags)
     s->open_time = av_gettime() / 1000;
     av_log(s, AV_LOG_INFO, "%"PRId64" - tcp_open url: %s\n", s->open_time, uri);
 
-
     av_url_split(proto, sizeof(proto), NULL, 0, hostname, sizeof(hostname),
         &port, path, sizeof(path), uri);
     if (strcmp(proto, "tcp"))
@@ -301,7 +300,6 @@ static int tcp_read(URLContext *h, uint8_t *buf, int size)
     ret = recv(s->fd, buf, size, 0);
     if (ret == 0) {
         av_log(s, AV_LOG_WARNING, "tcp_read eof, url: %s\n", h->filename);
-
         return AVERROR_EOF;
     }
 

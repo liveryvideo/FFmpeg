@@ -709,15 +709,6 @@ static int decode_vps_ext(GetBitContext *gb, AVCodecContext *avctx, HEVCVPS *vps
     return 0;
 }
 
-static int compare_vps(const HEVCVPS *vps1, const HEVCVPS *vps2)
-{
-    if (!memcmp(vps1, vps2, offsetof(HEVCVPS, hdr)))
-        return !vps1->vps_num_hrd_parameters ||
-               !memcmp(vps1->hdr, vps2->hdr, vps1->vps_num_hrd_parameters * sizeof(*vps1->hdr));
-
-    return 0;
-}
-
 int ff_hevc_decode_nal_vps(GetBitContext *gb, AVCodecContext *avctx,
                            HEVCParamSets *ps)
 {

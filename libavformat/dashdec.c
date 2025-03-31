@@ -159,6 +159,7 @@ typedef struct DASHContext {
     int is_init_section_common_video;
     int is_init_section_common_audio;
     int is_init_section_common_subtitle;
+
 } DASHContext;
 
 static int ishttp(char *url)

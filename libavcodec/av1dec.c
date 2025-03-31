@@ -726,7 +726,6 @@ static void av1_frame_replace(AV1Frame *dst, const AV1Frame *src)
     memcpy(dst->order_hints, src->order_hints,
            sizeof(dst->order_hints));
 
-
     dst->force_integer_mv = src->force_integer_mv;
 }
 

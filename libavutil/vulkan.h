@@ -112,10 +112,6 @@ typedef struct FFVkQueueFamilyCtx {
     int nb_queues;
 } FFVkQueueFamilyCtx;
 
-#if VK_USE_64_BIT_PTR_DEFINES == 1
-#else
-    uint64_t                      *desc_staging;
-#endif
 typedef struct FFVkExecContext {
     uint32_t idx;
     const struct FFVkExecPool *parent;

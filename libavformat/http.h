@@ -66,5 +66,4 @@ char *ff_http_get_url(URLContext *h);
 
 int ff_http_get_code(URLContext *h);
 
-
 #endif /* AVFORMAT_HTTP_H */

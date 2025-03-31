@@ -84,8 +84,6 @@
  */
 #define FF_FIELD_AT(type, off, obj) (*(type *)((char *)&(obj) + (off)))
 
-#define FF_PTR_ADD(ptr, off) ((off) ? (ptr) + (off) : (ptr))
-
 /**
  * Return NULL if CONFIG_SMALL is true, otherwise the argument
  * without modification. Used to disable the definition of strings.

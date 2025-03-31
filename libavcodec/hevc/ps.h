@@ -240,9 +240,6 @@ typedef struct HEVCVPS {
 
     uint8_t *data;
     int data_size;
-    /* Put this at the end of the structure to make it easier to calculate the
-     * size before this pointer, which is used for memcmp */
-    HEVCHdrParams *hdr;
 } HEVCVPS;
 
 typedef struct ScalingList {

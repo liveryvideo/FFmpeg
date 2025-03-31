@@ -201,13 +201,6 @@ static int webp_write_trailer(AVFormatContext *s)
     return 0;
 }
 
-static void webp_deinit(AVFormatContext *s)
-{
-    WebpContext *w = s->priv_data;
-
-    av_packet_unref(&w->last_pkt);
-}
-
 #define OFFSET(x) offsetof(WebpContext, x)
 #define ENC AV_OPT_FLAG_ENCODING_PARAM
 static const AVOption options[] = {
