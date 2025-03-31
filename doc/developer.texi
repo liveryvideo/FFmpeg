@@ -638,6 +638,11 @@ patch is inline or attached per mail.
 You can check @url{https://patchwork.ffmpeg.org}, if your patch does not show up, its mime type
 likely was wrong.
 
+@subheading How to setup git send-email?
+
+Please see @url{https://git-send-email.io/}.
+For gmail additionally see @url{https://shallowsky.com/blog/tech/email/gmail-app-passwds.html}.
+
 @subheading Sending patches from email clients
 Using @code{git send-email} might not be desirable for everyone. The
 following trick allows to send patches via email clients in a safe
@@ -682,7 +687,7 @@ number) in @file{libavcodec/version.h} or @file{libavformat/version.h}?
 Did you register it in @file{allcodecs.c} or @file{allformats.c}?
 
 @item
-Did you add the AVCodecID to @file{avcodec.h}?
+Did you add the AVCodecID to @file{codec_id.h}?
 When adding new codec IDs, also add an entry to the codec descriptor
 list in @file{libavcodec/codec_desc.c}.
 
@@ -697,7 +702,7 @@ already being compiled by some other rule, like a raw demuxer.
 
 @item
 Did you add an entry to the table of supported formats or codecs in
-@file{doc/general.texi}?
+@file{doc/general_contents.texi}?
 
 @item
 Did you add an entry in the Changelog?
@@ -921,6 +926,25 @@ FATE under the supervision of either the @strong{memcheck} or the
 In case you need finer control over how valgrind is invoked, use the
 @code{--target-exec='valgrind <your_custom_valgrind_options>} option in
 your configure line instead.
+
+@anchor{Maintenance}
+@chapter Maintenance process
+
+@anchor{MAINTAINERS}
+@section MAINTAINERS
+
+The developers maintaining each part of the codebase are listed in @file{MAINTAINERS}.
+Being listed in @file{MAINTAINERS}, gives one the right to have git write access to
+the specific repository.
+
+@anchor{Becoming a maintainer}
+@section Becoming a maintainer
+
+People add themselves to @file{MAINTAINERS} by sending a patch like any other code
+change. These get reviewed by the community like any other patch. It is expected
+that, if someone has an objection to a new maintainer, she is willing to object
+in public with her full name and is willing to take over maintainership for the area.
+
 
 @anchor{Release process}
 @chapter Release process

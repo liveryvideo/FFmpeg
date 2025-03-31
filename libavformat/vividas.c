@@ -30,6 +30,7 @@
 
 #include "libavutil/avassert.h"
 #include "libavutil/intreadwrite.h"
+#include "libavutil/mem.h"
 #include "avio_internal.h"
 #include "avformat.h"
 #include "demux.h"
@@ -566,7 +567,8 @@ static int viv_read_header(AVFormatContext *s)
     v = avio_r8(pb);
     avio_seek(pb, v, SEEK_CUR);
 
-    avio_read(pb, keybuffer, 187);
+    if (avio_read(pb, keybuffer, 187) != 187)
+        return AVERROR_INVALIDDATA;
     key = decode_key(keybuffer);
     viv->sb_key = key;
 

@@ -22,6 +22,7 @@
 #include "libavutil/avassert.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/log.h"
+#include "libavutil/mem.h"
 #include "libavcodec/mathops.h"
 #include "libavcodec/packet.h"
 #include "avformat.h"
@@ -72,8 +73,8 @@ static int audio_frame_obu(AVFormatContext *s, const IAMFDemuxContext *c,
         uint8_t *side_data = av_packet_new_side_data(pkt, AV_PKT_DATA_SKIP_SAMPLES, 10);
         if (!side_data)
             return AVERROR(ENOMEM);
-        AV_WL32(side_data, skip_samples);
-        AV_WL32(side_data + 4, discard_padding);
+        AV_WL32A(side_data, skip_samples);
+        AV_WL32A(side_data + 4, discard_padding);
     }
     if (c->mix) {
         uint8_t *side_data = av_packet_new_side_data(pkt, AV_PKT_DATA_IAMF_MIX_GAIN_PARAM, c->mix_size);
@@ -108,6 +109,7 @@ static int parameter_block_obu(AVFormatContext *s, IAMFDemuxContext *c,
     AVIOContext *pb;
     uint8_t *buf;
     unsigned int duration, constant_subblock_duration;
+    unsigned int total_duration = 0;
     unsigned int nb_subblocks;
     unsigned int parameter_id;
     size_t out_param_size;
@@ -146,8 +148,10 @@ static int parameter_block_obu(AVFormatContext *s, IAMFDemuxContext *c,
         constant_subblock_duration = ffio_read_leb(pb);
         if (constant_subblock_duration == 0)
             nb_subblocks = ffio_read_leb(pb);
-        else
+        else {
             nb_subblocks = duration / constant_subblock_duration;
+            total_duration = duration;
+        }
     } else {
         duration = param->duration;
         constant_subblock_duration = param->constant_subblock_duration;
@@ -171,8 +175,11 @@ static int parameter_block_obu(AVFormatContext *s, IAMFDemuxContext *c,
         void *subblock = av_iamf_param_definition_get_subblock(out_param, i);
         unsigned int subblock_duration = constant_subblock_duration;
 
-        if (!param_definition->mode && !constant_subblock_duration)
+        if (!param_definition->mode && !constant_subblock_duration) {
             subblock_duration = ffio_read_leb(pb);
+            total_duration += subblock_duration;
+        } else if (i == nb_subblocks - 1)
+            subblock_duration = duration - i * constant_subblock_duration;
 
         switch (param->type) {
         case AV_IAMF_PARAMETER_DEFINITION_MIX_GAIN: {
@@ -234,6 +241,12 @@ static int parameter_block_obu(AVFormatContext *s, IAMFDemuxContext *c,
        av_log(s, level, "Underread in parameter_block_obu. %d bytes left at the end\n", len);
     }
 
+    if (!param_definition->mode && !constant_subblock_duration && total_duration != duration) {
+        av_log(s, AV_LOG_ERROR, "Invalid duration in parameter block\n");
+        ret = AVERROR_INVALIDDATA;
+        goto fail;
+    }
+
     switch (param->type) {
     case AV_IAMF_PARAMETER_DEFINITION_MIX_GAIN:
         av_free(c->mix);
@@ -269,17 +282,20 @@ int ff_iamf_read_packet(AVFormatContext *s, IAMFDemuxContext *c,
     int read = 0;
 
     while (1) {
-        uint8_t header[MAX_IAMF_OBU_HEADER_SIZE + AV_INPUT_BUFFER_PADDING_SIZE];
+        uint8_t header[MAX_IAMF_OBU_HEADER_SIZE + AV_INPUT_BUFFER_PADDING_SIZE] = {0};
         enum IAMF_OBU_Type type;
         unsigned obu_size;
         unsigned skip_samples, discard_padding;
         int ret, len, size, start_pos;
 
-        if ((ret = ffio_ensure_seekback(pb, FFMIN(MAX_IAMF_OBU_HEADER_SIZE, max_size))) < 0)
+        ret = ffio_ensure_seekback(pb, FFMIN(MAX_IAMF_OBU_HEADER_SIZE, max_size));
+        if (ret < 0)
             return ret;
         size = avio_read(pb, header, FFMIN(MAX_IAMF_OBU_HEADER_SIZE, max_size));
         if (size < 0)
             return size;
+        if (size != FFMIN(MAX_IAMF_OBU_HEADER_SIZE, max_size))
+            return AVERROR_INVALIDDATA;
 
         len = ff_iamf_parse_obu_header(header, size, &obu_size, &start_pos, &type,
                                        &skip_samples, &discard_padding);

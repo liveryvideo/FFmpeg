@@ -290,10 +290,10 @@ static av_cold int libdav1d_init(AVCodecContext *c)
 #endif
 
     dav1d->dovi.logctx = c;
-    dav1d->dovi.dv_profile = 10; // default for AV1
+    dav1d->dovi.cfg.dv_profile = 10; // default for AV1
     sd = ff_get_coded_side_data(c, AV_PKT_DATA_DOVI_CONF);
-    if (sd && sd->size > 0)
-        ff_dovi_update_cfg(&dav1d->dovi, (AVDOVIDecoderConfigurationRecord *) sd->data);
+    if (sd && sd->size >= sizeof(dav1d->dovi.cfg))
+        dav1d->dovi.cfg = *(AVDOVIDecoderConfigurationRecord *) sd->data;
     return 0;
 }
 
@@ -372,9 +372,10 @@ static int libdav1d_receive_frame_internal(AVCodecContext *c, Dav1dPicture *p)
 
     res = dav1d_get_picture(dav1d->c, p);
     if (res < 0) {
-        if (res == AVERROR(EINVAL))
+        if (res == AVERROR(EINVAL)) {
+            dav1d_data_unref(data);
             res = AVERROR_INVALIDDATA;
-        else if (res == AVERROR(EAGAIN))
+        } else if (res == AVERROR(EAGAIN))
             res = c->internal->draining ? AVERROR_EOF : 1;
     }
 
@@ -385,7 +386,7 @@ static int libdav1d_receive_frame(AVCodecContext *c, AVFrame *frame)
 {
     Libdav1dContext *dav1d = c->priv_data;
     Dav1dPicture pic = { 0 }, *p = &pic;
-    AVPacket *pkt;
+    const AVPacket *pkt;
 #if FF_DAV1D_VERSION_AT_LEAST(5,1)
     enum Dav1dEventFlags event_flags = 0;
 #endif
@@ -439,7 +440,7 @@ static int libdav1d_receive_frame(AVCodecContext *c, AVFrame *frame)
               INT_MAX);
     ff_set_sar(c, frame->sample_aspect_ratio);
 
-    pkt = (AVPacket *)p->m.user_data.data;
+    pkt = (const AVPacket *)p->m.user_data.data;
 
     // match timestamps and packet size
     res = ff_decode_frame_props_from_pkt(c, frame, pkt);
@@ -528,7 +529,7 @@ static int libdav1d_receive_frame(AVCodecContext *c, AVFrame *frame)
                 if (!res)
                     break;
 
-                res = ff_frame_new_side_data_from_buf(c, frame, AV_FRAME_DATA_A53_CC, &buf, NULL);
+                res = ff_frame_new_side_data_from_buf(c, frame, AV_FRAME_DATA_A53_CC, &buf);
                 if (res < 0)
                     goto fail;
 
@@ -567,7 +568,8 @@ static int libdav1d_receive_frame(AVCodecContext *c, AVFrame *frame)
                 provider_oriented_code != 0x800)
                 break;
 
-            res = ff_dovi_rpu_parse(&dav1d->dovi, gb.buffer, gb.buffer_end - gb.buffer);
+            res = ff_dovi_rpu_parse(&dav1d->dovi, gb.buffer, gb.buffer_end - gb.buffer,
+                                    c->err_recognition);
             if (res < 0) {
                 av_log(c, AV_LOG_WARNING, "Error parsing DOVI OBU.\n");
                 break; // ignore
