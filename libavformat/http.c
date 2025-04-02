@@ -2259,17 +2259,6 @@ static int http_proxy_write(URLContext *h, const uint8_t *buf, int size)
     return ffurl_write(s->hd, buf, size);
 }
 
-char *ff_http_get_url(URLContext *h) {
-    //TODO: We probably do not need this anymore since conn now also has the url
-    HTTPContext *s = h->priv_data;
-    return s->location;
-}
-
-int ff_http_get_code(URLContext *h) {
-    HTTPContext *s = h->priv_data;
-    return s->http_code;
-}
-
 const URLProtocol ff_httpproxy_protocol = {
     .name                = "httpproxy",
     .url_open            = http_proxy_open,

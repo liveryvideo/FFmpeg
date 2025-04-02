@@ -62,8 +62,4 @@ int ff_http_do_new_request2(URLContext *h, const char *uri, AVDictionary **optio
 
 int ff_http_averror(int status_code, int default_averror);
 
-char *ff_http_get_url(URLContext *h);
-
-int ff_http_get_code(URLContext *h);
-
 #endif /* AVFORMAT_HTTP_H */

@@ -446,13 +446,13 @@ int ff_connect_parallel(struct addrinfo *addrs, int timeout_ms_per_address,
             getnameinfo(addrs->ai_addr, addrs->ai_addrlen,
                         hostbuf, sizeof(hostbuf), portbuf, sizeof(portbuf),
                         NI_NUMERICHOST | NI_NUMERICSERV);
-            av_log(h, AV_LOG_INFO, "Starting connection attempt to %s port %s, nb_attempts: %d\n",
-                                      hostbuf, portbuf, nb_attempts);
+            av_log(h, AV_LOG_VERBOSE, "Starting connection attempt to %s port %s\n",
+                                      hostbuf, portbuf);
             last_err = start_connect_attempt(&attempts[nb_attempts], &addrs,
                                              timeout_ms_per_address, h,
                                              customize_fd, customize_ctx);
             if (last_err < 0) {
-                av_log(h, AV_LOG_INFO, "Connected attempt failed: %s\n",
+                av_log(h, AV_LOG_VERBOSE, "Connected attempt failed: %s\n",
                                           av_err2str(last_err));
                 continue;
             }
@@ -502,7 +502,7 @@ int ff_connect_parallel(struct addrinfo *addrs, int timeout_ms_per_address,
                     getnameinfo(attempts[i].addr->ai_addr, attempts[i].addr->ai_addrlen,
                                 hostbuf, sizeof(hostbuf), portbuf, sizeof(portbuf),
                                 NI_NUMERICHOST | NI_NUMERICSERV);
-                    av_log(h, AV_LOG_INFO, "Successfully connected to %s port %s\n",
+                    av_log(h, AV_LOG_VERBOSE, "Successfully connected to %s port %s\n",
                                               hostbuf, portbuf);
                     return 0;
                 }
@@ -517,7 +517,7 @@ int ff_connect_parallel(struct addrinfo *addrs, int timeout_ms_per_address,
             getnameinfo(attempts[i].addr->ai_addr, attempts[i].addr->ai_addrlen,
                         hostbuf, sizeof(hostbuf), portbuf, sizeof(portbuf),
                         NI_NUMERICHOST | NI_NUMERICSERV);
-            av_log(h, AV_LOG_INFO, "Connection attempt to %s port %s "
+            av_log(h, AV_LOG_VERBOSE, "Connection attempt to %s port %s "
                                       "failed: %s\n", hostbuf, portbuf, av_err2str(last_err));
             closesocket(attempts[i].fd);
             memmove(&attempts[i], &attempts[i + 1],
