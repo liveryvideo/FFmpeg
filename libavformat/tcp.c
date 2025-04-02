@@ -20,11 +20,11 @@
  */
 #include "avformat.h"
 #include "libavutil/avassert.h"
+#include "libavutil/mem.h"
 #include "libavutil/parseutils.h"
 #include "libavutil/opt.h"
 #include "libavutil/time.h"
 
-#include "internal.h"
 #include "network.h"
 #include "os_support.h"
 #include "url.h"
@@ -44,7 +44,6 @@ typedef struct TCPContext {
     int recv_buffer_size;
     int send_buffer_size;
     int tcp_nodelay;
-    int64_t open_time;
 #if !HAVE_WINSOCK2_H
     int tcp_mss;
 #endif /* !HAVE_WINSOCK2_H */
@@ -149,10 +148,6 @@ static int tcp_open(URLContext *h, const char *uri, int flags)
     char hostname[1024],proto[1024],path[1024];
     char portstr[10];
     s->open_timeout = 5000000;
-
-    s->open_time = av_gettime() / 1000;
-    av_log(s, AV_LOG_INFO, "%"PRId64" - tcp_open url: %s\n", s->open_time, uri);
-
 
     av_url_split(proto, sizeof(proto), NULL, 0, hostname, sizeof(hostname),
         &port, path, sizeof(path), uri);
@@ -299,12 +294,8 @@ static int tcp_read(URLContext *h, uint8_t *buf, int size)
             return ret;
     }
     ret = recv(s->fd, buf, size, 0);
-    if (ret == 0) {
-        av_log(s, AV_LOG_WARNING, "tcp_read eof, url: %s\n", h->filename);
-
+    if (ret == 0)
         return AVERROR_EOF;
-    }
-
     return ret < 0 ? ff_neterrno() : ret;
 }
 
@@ -341,10 +332,6 @@ static int tcp_shutdown(URLContext *h, int flags)
 static int tcp_close(URLContext *h)
 {
     TCPContext *s = h->priv_data;
-    int64_t time_end_ms = av_gettime() / 1000;
-    int64_t duration = time_end_ms - s->open_time;
-    av_log(s, AV_LOG_INFO, "%"PRId64" ms - tcp_close: %s\n", duration, h->filename);
-
     closesocket(s->fd);
     return 0;
 }

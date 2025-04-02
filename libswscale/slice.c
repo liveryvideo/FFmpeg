@@ -18,6 +18,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "libavutil/mem.h"
 #include "swscale_internal.h"
 
 static void free_lines(SwsSlice *s)
@@ -59,7 +60,7 @@ static int alloc_lines(SwsSlice *s, int size, int width)
         for (j = 0; j < n; ++j) {
             // chroma plane line U and V are expected to be contiguous in memory
             // by mmx vertical scaler code
-            s->plane[i].line[j] = av_malloc(size * 2 + 32);
+            s->plane[i].line[j] = av_mallocz(size * 2 + 32);
             if (!s->plane[i].line[j]) {
                 free_lines(s);
                 return AVERROR(ENOMEM);

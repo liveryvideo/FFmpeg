@@ -22,8 +22,7 @@
 */
 
 #include <gme/gme.h>
-#include "libavutil/avstring.h"
-#include "libavutil/eval.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "avformat.h"
 #include "demux.h"
@@ -136,10 +135,8 @@ static int read_header_gme(AVFormatContext *s)
         return AVERROR_UNKNOWN;
 
     st = avformat_new_stream(s, NULL);
-    if (!st) {
-        read_close_gme(s);
+    if (!st)
         return AVERROR(ENOMEM);
-    }
     avpriv_set_pts_info(st, 64, 1, 1000);
     if (duration > 0)
         st->duration = duration;

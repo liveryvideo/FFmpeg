@@ -29,12 +29,12 @@
 #include "libavutil/channel_layout.h"
 #include "libavutil/dict.h"
 #include "libavutil/dict_internal.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/internal.h"
 #include "libavutil/intfloat.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/mastering_display_metadata.h"
-#include "libavutil/mathematics.h"
 #include "avformat.h"
 #include "demux.h"
 #include "internal.h"
@@ -505,8 +505,6 @@ static int parse_keyframes_index(AVFormatContext *s, AVIOContext *ioc, int64_t m
                 goto invalid;
             d = av_int2double(avio_rb64(ioc)) * factor;
             if (isnan(d) || d < INT64_MIN || d > INT64_MAX)
-                goto invalid;
-            if (avio_feof(ioc))
                 goto invalid;
             if (avio_feof(ioc))
                 goto invalid;
@@ -1113,6 +1111,7 @@ static int flv_parse_video_color_info(AVFormatContext *s, AVStream *st, int64_t 
         return TYPE_UNKNOWN;
     }
 
+    av_free(flv->metaVideoColor);
     if (!(flv->metaVideoColor = av_mallocz(sizeof(FLVMetaVideoColor)))) {
         return AVERROR(ENOMEM);
     }

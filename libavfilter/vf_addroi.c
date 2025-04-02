@@ -20,7 +20,7 @@
 #include "libavutil/eval.h"
 #include "libavutil/opt.h"
 #include "avfilter.h"
-#include "internal.h"
+#include "filters.h"
 #include "video.h"
 
 enum {
@@ -39,6 +39,7 @@ enum {
 static const char *const addroi_var_names[] = {
     "iw",
     "ih",
+    NULL,
 };
 
 typedef struct AddROIContext {

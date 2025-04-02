@@ -35,6 +35,7 @@
 #include "libavutil/bprint.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/mathematics.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/parseutils.h"
 #include "libavutil/rational.h"
@@ -1462,7 +1463,7 @@ static int write_manifest(AVFormatContext *s, int final)
                     av_strlcat(codec_str, audio_codec_str, sizeof(codec_str));
                 }
                 get_hls_playlist_name(playlist_file, sizeof(playlist_file), NULL, i);
-                ff_hls_write_stream_info(st, m3u8_out, stream_bitrate,
+                ff_hls_write_stream_info(st, m3u8_out, stream_bitrate, 0,
                                          playlist_file, agroup,
                                          codec_str, NULL, NULL);
             }
@@ -1501,7 +1502,7 @@ static int write_manifest(AVFormatContext *s, int final)
                     continue;
                 av_strlcpy(codec_str, os->codec_str, sizeof(codec_str));
                 get_hls_playlist_name(playlist_file, sizeof(playlist_file), NULL, i);
-                ff_hls_write_stream_info(st, m3u8_out, stream_bitrate,
+                ff_hls_write_stream_info(st, m3u8_out, stream_bitrate, 0,
                                          playlist_file, NULL,
                                          codec_str, NULL, NULL);
             }

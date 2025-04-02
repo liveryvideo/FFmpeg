@@ -35,6 +35,7 @@
 #include "libavformat/isom.h"
 #include "libavutil/avassert.h"
 #include "libavutil/channel_layout.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/log.h"
 
@@ -575,6 +576,7 @@ static int ffat_encode(AVCodecContext *avctx, AVPacket *avpkt,
                                      avctx->frame_size,
                            &avpkt->pts,
                            &avpkt->duration);
+        avpkt->flags |= AV_PKT_FLAG_KEY;
     } else if (ret && ret != 1) {
         av_log(avctx, AV_LOG_ERROR, "Encode error: %i\n", ret);
         return AVERROR_EXTERNAL;

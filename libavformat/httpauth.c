@@ -22,6 +22,7 @@
 #include "httpauth.h"
 #include "libavutil/base64.h"
 #include "libavutil/avstring.h"
+#include "libavutil/mem.h"
 #include "internal.h"
 #include "libavutil/random_seed.h"
 #include "libavutil/md5.h"
@@ -189,6 +190,7 @@ static char *make_md5_digest_auth(HTTPAuthState *state, const char *username,
     md5ctx = av_md5_alloc();
     if (!md5ctx)
         return NULL;
+
     av_md5_init(md5ctx);
     update_md5_strings(md5ctx, username, ":", state->realm, ":", password, NULL);
     av_md5_final(md5ctx, hash);
@@ -203,6 +205,7 @@ static char *make_md5_digest_auth(HTTPAuthState *state, const char *username,
         av_free(md5ctx);
         return NULL;
     }
+
     av_md5_init(md5ctx);
     update_md5_strings(md5ctx, method, ":", uri, NULL);
     av_md5_final(md5ctx, hash);
@@ -219,7 +222,6 @@ static char *make_md5_digest_auth(HTTPAuthState *state, const char *username,
 
     av_free(md5ctx);
 
-    
     if (!strcmp(digest->qop, "") || !strcmp(digest->qop, "auth")) {
     } else if (!strcmp(digest->qop, "auth-int")) {
         /* qop=auth-int not supported */

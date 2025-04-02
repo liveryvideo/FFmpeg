@@ -28,6 +28,7 @@
 #include "libavutil/eval.h"
 #include "libavutil/intfloat.h"
 #include "libavutil/intreadwrite.h"
+#include "libavutil/mem.h"
 #include "libavutil/rational.h"
 
 #include "avformat.h"
@@ -164,8 +165,6 @@ static int parse_audio_var(AVFormatContext *avctx, AVStream *st,
         if (sample_rate <= 0)
             return AVERROR_INVALIDDATA;
         st->codecpar->sample_rate = sample_rate;
-        if (st->codecpar->sample_rate <= 0)
-            return AVERROR_INVALIDDATA;
         avpriv_set_pts_info(st, 33, 1, st->codecpar->sample_rate);
     } else if (!strcmp(name, "SAMPLE_WIDTH")) {
         uint64_t bpc = var_read_int(pb, size) * (uint64_t)8;
@@ -257,7 +256,8 @@ static int read_table(AVFormatContext *avctx, AVStream *st,
         if (avio_feof(pb))
             return AVERROR_EOF;
 
-        avio_read(pb, name, 16);
+        if (avio_read(pb, name, 16) != 16)
+            return AVERROR_INVALIDDATA;
         name[sizeof(name) - 1] = 0;
         size = avio_rb32(pb);
         if (size < 0) {

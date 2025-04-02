@@ -18,7 +18,12 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "config.h"
 #include "config_components.h"
+
+#if CONFIG_TLS_PROTOCOL && CONFIG_OPENSSL
+#include <openssl/opensslv.h>
+#endif
 
 #include <fcntl.h>
 #include "network.h"
@@ -32,7 +37,7 @@
 int ff_tls_init(void)
 {
 #if CONFIG_TLS_PROTOCOL
-#if CONFIG_OPENSSL
+#if CONFIG_OPENSSL && OPENSSL_VERSION_NUMBER < 0x10100000L
     int ret;
     if ((ret = ff_openssl_init()) < 0)
         return ret;
@@ -47,7 +52,7 @@ int ff_tls_init(void)
 void ff_tls_deinit(void)
 {
 #if CONFIG_TLS_PROTOCOL
-#if CONFIG_OPENSSL
+#if CONFIG_OPENSSL && OPENSSL_VERSION_NUMBER < 0x10100000L
     ff_openssl_deinit();
 #endif
 #if CONFIG_GNUTLS
@@ -291,16 +296,14 @@ int ff_listen_connect(int fd, const struct sockaddr *addr,
             if (getsockopt (fd, SOL_SOCKET, SO_ERROR, &ret, &optlen))
                 ret = AVUNERROR(ff_neterrno());
             if (ret != 0) {
-                char errbuf[100];
                 ret = AVERROR(ret);
-                av_strerror(ret, errbuf, sizeof(errbuf));
                 if (will_try_next)
                     av_log(h, AV_LOG_WARNING,
                            "Connection to %s failed (%s), trying next address\n",
-                           h->filename, errbuf);
+                           h->filename, av_err2str(ret));
                 else
                     av_log(h, AV_LOG_ERROR, "Connection to %s failed: %s\n",
-                           h->filename, errbuf);
+                           h->filename, av_err2str(ret));
             }
         default:
             return ret;
@@ -425,7 +428,7 @@ int ff_connect_parallel(struct addrinfo *addrs, int timeout_ms_per_address,
     int64_t next_attempt_us = av_gettime_relative(), next_deadline_us;
     int last_err = AVERROR(EIO);
     socklen_t optlen;
-    char errbuf[100], hostbuf[100], portbuf[20];
+    char hostbuf[100], portbuf[20];
 
     if (parallel > FF_ARRAY_ELEMS(attempts))
         parallel = FF_ARRAY_ELEMS(attempts);
@@ -443,15 +446,14 @@ int ff_connect_parallel(struct addrinfo *addrs, int timeout_ms_per_address,
             getnameinfo(addrs->ai_addr, addrs->ai_addrlen,
                         hostbuf, sizeof(hostbuf), portbuf, sizeof(portbuf),
                         NI_NUMERICHOST | NI_NUMERICSERV);
-            av_log(h, AV_LOG_INFO, "Starting connection attempt to %s port %s, nb_attempts: %d\n",
-                                      hostbuf, portbuf, nb_attempts);
+            av_log(h, AV_LOG_VERBOSE, "Starting connection attempt to %s port %s\n",
+                                      hostbuf, portbuf);
             last_err = start_connect_attempt(&attempts[nb_attempts], &addrs,
                                              timeout_ms_per_address, h,
                                              customize_fd, customize_ctx);
             if (last_err < 0) {
-                av_strerror(last_err, errbuf, sizeof(errbuf));
-                av_log(h, AV_LOG_INFO, "Connected attempt failed: %s\n",
-                                          errbuf);
+                av_log(h, AV_LOG_VERBOSE, "Connected attempt failed: %s\n",
+                                          av_err2str(last_err));
                 continue;
             }
             if (last_err > 0) {
@@ -500,7 +502,7 @@ int ff_connect_parallel(struct addrinfo *addrs, int timeout_ms_per_address,
                     getnameinfo(attempts[i].addr->ai_addr, attempts[i].addr->ai_addrlen,
                                 hostbuf, sizeof(hostbuf), portbuf, sizeof(portbuf),
                                 NI_NUMERICHOST | NI_NUMERICSERV);
-                    av_log(h, AV_LOG_INFO, "Successfully connected to %s port %s\n",
+                    av_log(h, AV_LOG_VERBOSE, "Successfully connected to %s port %s\n",
                                               hostbuf, portbuf);
                     return 0;
                 }
@@ -515,9 +517,8 @@ int ff_connect_parallel(struct addrinfo *addrs, int timeout_ms_per_address,
             getnameinfo(attempts[i].addr->ai_addr, attempts[i].addr->ai_addrlen,
                         hostbuf, sizeof(hostbuf), portbuf, sizeof(portbuf),
                         NI_NUMERICHOST | NI_NUMERICSERV);
-            av_strerror(last_err, errbuf, sizeof(errbuf));
-            av_log(h, AV_LOG_INFO, "Connection attempt to %s port %s "
-                                      "failed: %s\n", hostbuf, portbuf, errbuf);
+            av_log(h, AV_LOG_VERBOSE, "Connection attempt to %s port %s "
+                                      "failed: %s\n", hostbuf, portbuf, av_err2str(last_err));
             closesocket(attempts[i].fd);
             memmove(&attempts[i], &attempts[i + 1],
                     (nb_attempts - i - 1) * sizeof(*attempts));
@@ -532,9 +533,8 @@ int ff_connect_parallel(struct addrinfo *addrs, int timeout_ms_per_address,
     if (last_err >= 0)
         last_err = AVERROR(ECONNREFUSED);
     if (last_err != AVERROR_EXIT) {
-        av_strerror(last_err, errbuf, sizeof(errbuf));
         av_log(h, AV_LOG_ERROR, "Connection to %s failed: %s\n",
-               h->filename, errbuf);
+               h->filename, av_err2str(last_err));
     }
     return last_err;
 }
@@ -595,7 +595,5 @@ int ff_http_match_no_proxy(const char *no_proxy, const char *hostname)
 
 void ff_log_net_error(void *ctx, int level, const char* prefix)
 {
-    char errbuf[100];
-    av_strerror(ff_neterrno(), errbuf, sizeof(errbuf));
-    av_log(ctx, level, "%s: %s\n", prefix, errbuf);
+    av_log(ctx, level, "%s: %s\n", prefix, av_err2str(ff_neterrno()));
 }

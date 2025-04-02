@@ -34,6 +34,7 @@
 #include "libavutil/channel_layout.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/dict.h"
+#include "libavutil/mem.h"
 #include "libavcodec/bytestream.h"
 #include "avformat.h"
 #include "demux.h"
@@ -358,6 +359,9 @@ static int read_dst_frame(AVFormatContext *s, AVPacket *pkt)
     uint32_t chunk_id;
     uint64_t chunk_pos, data_pos, data_size;
     int ret = AVERROR_EOF;
+
+    if (s->nb_streams < 1)
+        return AVERROR_INVALIDDATA;
 
     while (!avio_feof(pb)) {
         chunk_pos = avio_tell(pb);

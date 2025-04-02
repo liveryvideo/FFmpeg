@@ -31,18 +31,17 @@
 #include <zimg.h>
 
 #include "avfilter.h"
+#include "filters.h"
 #include "formats.h"
-#include "internal.h"
 #include "video.h"
-#include "libavutil/avstring.h"
 #include "libavutil/eval.h"
 #include "libavutil/internal.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/mathematics.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/parseutils.h"
 #include "libavutil/pixdesc.h"
-#include "libavutil/imgutils.h"
 
 #define ZIMG_ALIGNMENT 64
 #define MIN_TILESIZE 64
@@ -108,11 +107,6 @@ typedef struct ZScaleContext {
 
     char *w_expr;               ///< width  expression string
     char *h_expr;               ///< height expression string
-
-    int out_h_chr_pos;
-    int out_v_chr_pos;
-    int in_h_chr_pos;
-    int in_v_chr_pos;
 
     int first_time;
     int force_original_aspect_ratio;
@@ -632,9 +626,12 @@ static int graphs_build(AVFrame *in, AVFrame *out, const AVPixFmtDescriptor *des
     if (ret)
         return print_zimg_error(ctx);
 
+    if (size > (SIZE_MAX - ZIMG_ALIGNMENT))
+        return AVERROR(ENOMEM);
+
     if (s->tmp[job_nr])
         av_freep(&s->tmp[job_nr]);
-    s->tmp[job_nr] = av_calloc(size, 1);
+    s->tmp[job_nr] = av_mallocz(size + ZIMG_ALIGNMENT);
     if (!s->tmp[job_nr])
         return AVERROR(ENOMEM);
 
@@ -661,27 +658,19 @@ static int graphs_build(AVFrame *in, AVFrame *out, const AVPixFmtDescriptor *des
     return 0;
 }
 
-static int realign_frame(const AVPixFmtDescriptor *desc, AVFrame **frame, int needs_copy)
+static int realign_frame(AVFilterLink *link, const AVPixFmtDescriptor *desc, AVFrame **frame, int needs_copy)
 {
     AVFrame *aligned = NULL;
     int ret = 0, plane, planes;
 
     /* Realign any unaligned input frame. */
-    planes = av_pix_fmt_count_planes(desc->nb_components);
+    planes = av_pix_fmt_count_planes((*frame)->format);
     for (plane = 0; plane < planes; plane++) {
         int p = desc->comp[plane].plane;
         if ((uintptr_t)(*frame)->data[p] % ZIMG_ALIGNMENT || (*frame)->linesize[p] % ZIMG_ALIGNMENT) {
-            if (!(aligned = av_frame_alloc())) {
-                ret = AVERROR(ENOMEM);
-                goto fail;
-            }
-
-            aligned->format = (*frame)->format;
-            aligned->width  = (*frame)->width;
-            aligned->height = (*frame)->height;
-
-            if ((ret = av_frame_get_buffer(aligned, ZIMG_ALIGNMENT)) < 0)
-                goto fail;
+            aligned = ff_default_get_video_buffer2(link, (*frame)->width, (*frame)->height, ZIMG_ALIGNMENT);
+            if (!aligned)
+                return AVERROR(ENOMEM);
 
             if (needs_copy && (ret = av_frame_copy(aligned, *frame)) < 0)
                 goto fail;
@@ -754,7 +743,9 @@ static int filter_slice(AVFilterContext *ctx, void *data, int job_nr, int n_jobs
     }
     if (!s->graph[job_nr])
         return AVERROR(EINVAL);
-    ret = zimg_filter_graph_process(s->graph[job_nr], &src_buf, &dst_buf, s->tmp[job_nr], 0, 0, 0, 0);
+    ret = zimg_filter_graph_process(s->graph[job_nr], &src_buf, &dst_buf,
+                                    (uint8_t *)FFALIGN((uintptr_t)s->tmp[job_nr], ZIMG_ALIGNMENT),
+                                    0, 0, 0, 0);
     if (ret)
         return print_zimg_error(ctx);
 
@@ -769,7 +760,9 @@ static int filter_slice(AVFilterContext *ctx, void *data, int job_nr, int n_jobs
 
         if (!s->alpha_graph[job_nr])
             return AVERROR(EINVAL);
-        ret = zimg_filter_graph_process(s->alpha_graph[job_nr], &src_buf, &dst_buf, s->tmp[job_nr], 0, 0, 0, 0);
+        ret = zimg_filter_graph_process(s->alpha_graph[job_nr], &src_buf, &dst_buf,
+                                        (uint8_t *)FFALIGN((uintptr_t)s->tmp[job_nr], ZIMG_ALIGNMENT),
+                                        0, 0, 0, 0);
         if (ret)
             return print_zimg_error(ctx);
     }
@@ -806,20 +799,17 @@ static int filter_frame(AVFilterLink *link, AVFrame *in)
         (s->src_format.pixel_type !=s->dst_format.pixel_type) ||
         (s->src_format.transfer_characteristics !=s->dst_format.transfer_characteristics)
     ){
-        out = ff_get_video_buffer(outlink, outlink->w, outlink->h);
+        out = ff_default_get_video_buffer2(outlink, outlink->w, outlink->h, ZIMG_ALIGNMENT);
         if (!out) {
             ret =  AVERROR(ENOMEM);
             goto fail;
         }
 
-        if ((ret = realign_frame(odesc, &out, 0)) < 0)
-            goto fail;
-
         av_frame_copy_props(out, in);
         out->colorspace = outlink->colorspace;
         out->color_range = outlink->color_range;
 
-        if ((ret = realign_frame(desc, &in, 1)) < 0)
+        if ((ret = realign_frame(link, desc, &in, 1)) < 0)
             goto fail;
 
         snprintf(buf, sizeof(buf)-1, "%d", outlink->w);

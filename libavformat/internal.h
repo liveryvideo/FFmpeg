@@ -411,7 +411,9 @@ typedef struct FFStream {
 
     const struct AVCodecDescriptor *codec_desc;
 
+#if FF_API_INTERNAL_TIMING
     AVRational transferred_mux_tb;
+#endif
 } FFStream;
 
 static av_always_inline FFStream *ffstream(AVStream *st)
@@ -727,9 +729,6 @@ struct AVBPrint;
  */
 int ff_bprint_to_codecpar_extradata(AVCodecParameters *par, struct AVBPrint *buf);
 
-int ff_lock_avformat(void);
-int ff_unlock_avformat(void);
-
 /**
  * Set AVFormatContext url field to the provided pointer. The pointer must
  * point to a valid string. The existing url field is freed if necessary. Also
@@ -745,6 +744,22 @@ void ff_format_set_url(AVFormatContext *s, char *url);
  * @param extensions a comma-separated list of filename extensions
  */
 int ff_match_url_ext(const char *url, const char *extensions);
+
+/**
+ * Return in 'buf' the path with '%d' replaced by a number.
+ *
+ * Also handles the '%0nd' format where 'n' is the total number
+ * of digits and '%%'.
+ *
+ * @param buf destination buffer
+ * @param buf_size destination buffer size
+ * @param path path with substitution template
+ * @param number the number to substitute
+ * @param flags AV_FRAME_FILENAME_FLAGS_*
+ * @return 0 if OK, -1 on format error
+ */
+int ff_get_frame_filename(char *buf, int buf_size, const char *path,
+                          int64_t number, int flags);
 
 struct FFOutputFormat;
 struct FFInputFormat;
