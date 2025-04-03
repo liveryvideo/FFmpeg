@@ -1481,14 +1481,15 @@ void av_set_nonce_expire_time(const int64_t time)
 static void http_invalidate_auth(URLContext *h, HTTPAuthState *s)
 {
     if (s->auth_type != HTTP_AUTH_NONE && unlikely(av_gettime() - s->used_nonce_birth_time > nonce_expire_time)) {
+        time_t time_sec = US_TO_S(s->used_nonce_birth_time);
         struct timeval nonce_birth_time = {
-            .tv_sec = US_TO_S(s->used_nonce_birth_time),
-            .tv_usec = s->used_nonce_birth_time - S_TO_US(US_TO_S(s->used_nonce_birth_time))
+            .tv_sec = time_sec,
+            .tv_usec = s->used_nonce_birth_time - S_TO_US(time_sec)
         };
 
         char tmp_buf[64] = {0};
         struct tm local_nonce_birth_time = {0};
-        localtime_r(&nonce_birth_time, &local_nonce_birth_time);
+        localtime_r(&time_sec, &local_nonce_birth_time);
         strftime(tmp_buf, sizeof(tmp_buf), "%Y-%m-%d %H:%M:%S", &local_nonce_birth_time);
 
         char *time_buf = av_asprintf("%s.%06lu", tmp_buf, nonce_birth_time.tv_usec);
