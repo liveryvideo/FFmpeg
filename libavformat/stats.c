@@ -109,14 +109,14 @@ stats *init_stats_prefix(const char *name, const char *prefix, const int logInte
 
     char * const stats_name = av_asprintf("%s.%s", prefix, name);
     if (stats_name == NULL) {
-        av_log(NULL, AV_LOG_ERROR, "Failed to allocate stats name+prefix");
+        av_log(NULL, AV_LOG_ERROR, "Failed to allocate stats name+prefix\n");
         return NULL;
     }
 
     result_stats = init_stats(stats_name, logInterval);
     av_free(stats_name);
     if (result_stats == NULL) {
-        av_log(NULL, AV_LOG_ERROR, "Failed to allocate stats context");
+        av_log(NULL, AV_LOG_ERROR, "Failed to allocate stats context\n");
     }
 
     return result_stats;
@@ -148,13 +148,13 @@ int64_t get_init_time(const AVPacket *pkt) {
 
     const uint8_t *side_data = av_packet_get_side_data(pkt, AV_PKT_DATA_STRINGS_METADATA, &size);
     if (!side_data || !size) {
-        av_log(NULL, AV_LOG_ERROR, "Packet doesn't contain AV_PKT_DATA_STRINGS_METADATA, pts: %ld", pkt->pts);
+        av_log(NULL, AV_LOG_VERBOSE, "Packet doesn't contain AV_PKT_DATA_STRINGS_METADATA, pts: %ld\n", pkt->pts);
         return AVERROR(ENOENT);
     }
 
     ret = av_packet_unpack_dictionary(side_data, size, &dict);
     if (ret < 0) {
-        av_log(NULL, AV_LOG_ERROR, "Failed to unpack side_data dictionary, packet pts: %ld", pkt->pts);
+        av_log(NULL, AV_LOG_ERROR, "Failed to unpack side_data dictionary, packet pts: %ld\n", pkt->pts);
         return ret;
     }
 
@@ -165,7 +165,7 @@ int64_t get_init_time(const AVPacket *pkt) {
         init_time = strtoll(timeEntry->value, NULL, kDecimalBase);
         av_dict_free(&dict);
         if ((init_time == LONG_MAX || init_time == LONG_MIN) && errno == ERANGE) {
-            av_log(NULL, AV_LOG_ERROR, "%s during extracting %s from the packet with pts %ld, sd value: %s", get_flow_string(init_time), key, pkt->pts, timeEntry->value);
+            av_log(NULL, AV_LOG_ERROR, "%s during extracting %s from the packet with pts %ld, sd value: %s\n", get_flow_string(init_time), key, pkt->pts, timeEntry->value);
             return AVERROR(ERANGE);
         }
 
@@ -173,6 +173,6 @@ int64_t get_init_time(const AVPacket *pkt) {
     }
 
     av_dict_free(&dict);
-    av_log(NULL, AV_LOG_ERROR, "Failed to find %s, packet pts: %ld", key, pkt->pts);
+    av_log(NULL, AV_LOG_ERROR, "Failed to find %s, packet pts: %ld\n", key, pkt->pts);
     return AVERROR(ENOENT);
 }
