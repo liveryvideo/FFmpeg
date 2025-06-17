@@ -791,6 +791,9 @@ void pool_free_all(AVFormatContext *ctx) {
     }
     pthread_mutex_unlock(&connections_mutex);
 
+    free_stats(chunk_write_time_stats);
+    free_stats(conn_count_stats);
+
     av_log(ctx, AV_LOG_INFO, "All requests are stopped\n");
 }
 
