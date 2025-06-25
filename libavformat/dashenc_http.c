@@ -265,9 +265,13 @@ static connection *get_conn(int conn_nr) {
         }
     }
     pthread_mutex_unlock(&connections_mutex);
-    if (conn->nr != conn_nr) {
-        av_log(NULL, AV_LOG_ERROR, "connection %d not found.\n", conn_nr);
-        av_log(NULL, AV_LOG_ERROR, "First conn_nr: %d.\n", LIST_FIRST(&connections)->nr);
+    if (conn == NULL || conn->nr != conn_nr) {
+        av_log(NULL, AV_LOG_FATAL, "connection %d not found. Aborting...\n", conn_nr);
+        if (LIST_FIRST(&connections) != NULL) {
+            av_log(NULL, AV_LOG_FATAL, "First conn_nr: %d.\n", LIST_FIRST(&connections)->nr);
+        } else {
+            av_log(NULL, AV_LOG_FATAL, "Connections list empty.\n");
+        }
         abort();
     }
     return conn;
