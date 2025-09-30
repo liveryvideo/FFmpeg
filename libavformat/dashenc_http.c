@@ -213,7 +213,7 @@ enum {
     kWarningTreshold = 100
 };
 
-/* returns true if all the chunks are written */
+/* returns true if a chunk was written */
 static bool write_chunk_if_available(connection *conn) {
     int64_t start_time_ms = 0;
     int64_t write_time_ms = 0;
@@ -540,17 +540,31 @@ static void *thr_io_write(void *arg) {
                 connection_exit(conn);
             }
         }
+        const bool chunks_done = conn->chunks_done;
+        const bool has_chunks = chunk_is_available(&conn->chunks);
         pthread_mutex_unlock(&conn->chunks.mutex);
+
+        // If chunks_done is set but there are no chunks to write, close immediately without opening
+        if (chunks_done && !has_chunks) {
+            thr_io_close(conn);
+            continue;
+        }
 
         ret = open_request_if_needed(conn);
         if (ret < 0) {
             av_log(conn->s, AV_LOG_ERROR, "failed to open request, conn_nr: %d\n", conn->nr);
+            // Even if opening failed, we need to check if chunks_done is set
+            // to properly close the request and avoid infinite loop
+            if (chunks_done) {
+                thr_io_close(conn);
+                continue;
+            }
             continue;
         }
 
         while (write_chunk_if_available(conn)) {}
 
-        if (conn->chunks_done) {
+        if (chunks_done) {
             thr_io_close(conn);
             // after this no other action should be done on conn until a new request is started so make sure there are no statements below this.
             continue;

@@ -3099,14 +3099,6 @@ attribute_deprecated
 AVRational av_stream_get_codec_timebase(const AVStream *st);
 #endif
 
-
-/**
- * Change nonce expire time
- *
- * @param time     new time to set nonce to
- */
-void av_set_nonce_expire_time(int64_t time);
-
 /**
  * Change target latency time
  *

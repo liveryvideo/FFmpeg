@@ -42,6 +42,7 @@
 #include "libavutil/parseutils.h"
 
 #include "avformat.h"
+#include "avio_internal.h"
 #include "http.h"
 #include "httpauth.h"
 #include "internal.h"
@@ -198,9 +199,8 @@ static const AVOption options[] = {
     { NULL }
 };
 
-static int64_t nonce_birth_time = -1;
-static pthread_mutex_t nonce_birth_time_lock = PTHREAD_MUTEX_INITIALIZER;
 static char current_nonce[300];
+static pthread_mutex_t nonce_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void http_invalidate_auth(URLContext *h, HTTPAuthState *s);
 static int http_connect(URLContext *h, const char *path, const char *local_path,
@@ -405,6 +405,7 @@ redo:
     off = s->off;
     ret = http_open_cnx_internal(h, options);
     if (ret < 0) {
+        av_log(h, AV_LOG_INFO, "http_open_cnx_internal() failed, ret: %d, statusCode: %d\n", ret, s->http_code);
         if (!http_should_reconnect(s, ret) ||
             reconnect_delay > s->reconnect_delay_max ||
             (s->reconnect_max_retries >= 0 && conn_attempts > s->reconnect_max_retries) ||
@@ -480,6 +481,7 @@ redo:
     return 0;
 
 fail:
+    av_log(h, AV_LOG_INFO, "http_open_cnx() fail\n");
     if (s->hd)
         ffurl_closep(&s->hd);
     if (ret < 0)
@@ -1470,34 +1472,10 @@ static void bprint_escaped_path(AVBPrint *bp, const char *path)
     }
 }
 
-#define unlikely(x) __builtin_expect(!!(x),0)
-
-static atomic_int_fast64_t nonce_expire_time;
-void av_set_nonce_expire_time(const int64_t time)
-{
-    nonce_expire_time = time;
-}
-
 static void http_invalidate_auth(URLContext *h, HTTPAuthState *s)
 {
-    if (s->auth_type != HTTP_AUTH_NONE && unlikely(av_gettime() - s->used_nonce_birth_time > nonce_expire_time)) {
-        time_t time_sec = US_TO_S(s->used_nonce_birth_time);
-        struct timeval nonce_birth_time = {
-            .tv_sec = time_sec,
-            .tv_usec = s->used_nonce_birth_time - S_TO_US(time_sec)
-        };
-
-        char tmp_buf[64] = {0};
-        struct tm local_nonce_birth_time = {0};
-        localtime_r(&time_sec, &local_nonce_birth_time);
-        strftime(tmp_buf, sizeof(tmp_buf), "%Y-%m-%d %H:%M:%S", &local_nonce_birth_time);
-
-        char *time_buf = av_asprintf("%s.%06lu", tmp_buf, nonce_birth_time.tv_usec);
-        av_log(h, AV_LOG_INFO, "Nonce born at %s has expired, requesting for a new one\n", time_buf);
-        av_free(time_buf);
-
-        s->auth_type = HTTP_AUTH_NONE;
-    }
+    /* Auth invalidation is now handled by 401 responses from the server.
+     * The stale flag will be set when parsing WWW-Authenticate headers. */
 }
 
 static int http_connect(URLContext *h, const char *path, const char *local_path,
@@ -1608,7 +1586,7 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
         av_bprintf(&request, "Proxy-%s", proxyauthstr);
     av_bprintf(&request, "\r\n");
 
-    av_log(h, AV_LOG_DEBUG, "request: %s\n", request.str);
+    av_log(h, AV_LOG_INFO, "request: %s\n", request.str);
 
     if (!av_bprint_is_complete(&request)) {
         av_log(h, AV_LOG_ERROR, "overlong headers\n");
@@ -1637,6 +1615,53 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
     s->compressed       = 0;
 #endif
     if (post && !s->post_data && !send_expect_100) {
+        /* For chunked POST with digest auth, try to read response headers early
+         * to detect stale nonce before we start sending data chunks.
+         * This prevents sending all data only to find out the nonce expired.
+         * 
+         * Use a short timeout to avoid blocking if the server doesn't send
+         * an early response (some servers wait for the body before responding).
+         */
+        if (s->chunked_post && s->auth_state.auth_type == HTTP_AUTH_DIGEST) {
+            URLContext *http_url_context = ffio_geturlcontext(s->hd);
+            int has_data = 0;
+            
+            av_log(h, AV_LOG_INFO, "Chunked POST with digest auth - checking for early response\n");
+            
+            /* Check if data is available without blocking (100ms timeout) */
+            if (http_url_context && http_url_context->prot && http_url_context->prot->url_check) {
+                /* Use url_check to see if data is available */
+                has_data = http_url_context->prot->url_check(http_url_context, AVIO_FLAG_READ);
+            }
+            
+            /* Only try to read if data is available, otherwise skip to avoid deadlock */
+            if (has_data > 0) {
+                av_log(h, AV_LOG_INFO, "Data available, reading early response\n");
+                err = http_read_header(h);
+                av_log(h, AV_LOG_INFO, "Chunked POST header read\n");
+                
+                /* If we got a 401, the nonce is stale - return error to trigger retry */
+                if (err < 0 && s->http_code == 401) {
+                    av_log(h, AV_LOG_INFO, "Received 401 on chunked POST - nonce is stale, will retry\n");
+                    goto done;
+                }
+                
+                /* If we got any other error or non-2xx response, fail */
+                if (err < 0 || (s->http_code < 200 || s->http_code >= 300)) {
+                    av_log(h, AV_LOG_WARNING, "Unexpected response %d on chunked POST: %s\n", 
+                           s->http_code, av_err2str(err));
+                    if (err >= 0)
+                        err = AVERROR(EIO);
+                    goto done;
+                }
+                
+                /* Success - we can now send chunks */
+                av_log(h, AV_LOG_INFO, "Server accepted chunked POST headers (status %d)\n", s->http_code);
+            } else {
+                av_log(h, AV_LOG_INFO, "No early response available, proceeding with POST body\n");
+            }
+        }
+        
         /* Pretend that it did work. We didn't read any header yet, since
          * we've still to send the POST data, but the code calling this
          * function will check http_code after we return. */
@@ -1650,13 +1675,19 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
     if (err < 0)
         goto done;
 
-    pthread_mutex_lock(&nonce_birth_time_lock);
-    if (memcmp(current_nonce, s->auth_state.digest_params.nonce, sizeof(current_nonce))) {
+    /* Update the global nonce if we received a new one from the server.
+     * This allows the nonce to be reused across different HTTP contexts. */
+    pthread_mutex_lock(&nonce_lock);
+    if (s->auth_state.digest_params.nonce[0] != '\0') {
+        /* We received a nonce from the server, update the global copy */
         memcpy(current_nonce, s->auth_state.digest_params.nonce, sizeof(current_nonce));
-        nonce_birth_time = av_gettime();
+        av_log(h, AV_LOG_INFO, "Server provided new nonce: %s\n", current_nonce);
+    } else if (current_nonce[0] != '\0') {
+        /* No nonce in response, but we have a global nonce - restore it */
+        av_log(h, AV_LOG_INFO, "Server did not provided new nonce, restoring current_nonce: %s\n", current_nonce);
+        memcpy(s->auth_state.digest_params.nonce, current_nonce, sizeof(current_nonce));
     }
-    s->auth_state.used_nonce_birth_time = nonce_birth_time;
-    pthread_mutex_unlock(&nonce_birth_time_lock);
+    pthread_mutex_unlock(&nonce_lock);
 
     if (s->new_location)
         s->off = off;
@@ -1986,7 +2017,7 @@ static int http_shutdown(URLContext *h, int flags)
 
             curr_time_ms = US_TO_MS(av_gettime());
             req_time_ms = curr_time_ms - s->start_time_ms;
-            av_log(h, AV_LOG_INFO, "HTTP response: %d, duration: %"PRId64", url: %s \n", s->http_code, req_time_ms, s->location);
+            av_log(h, AV_LOG_INFO, "XXX HTTP response: %d, duration: %"PRId64", url: %s \n", s->http_code, req_time_ms, s->location);
 
             if (read_ret < 0 && read_ret != AVERROR(EAGAIN))
                 ret = read_ret;
