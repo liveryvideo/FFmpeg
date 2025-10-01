@@ -200,6 +200,7 @@ static const AVOption options[] = {
 };
 
 static char current_nonce[300];
+static HTTPAuthState cached_auth_state = {0};
 static pthread_mutex_t nonce_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void http_invalidate_auth(URLContext *h, HTTPAuthState *s);
@@ -768,6 +769,18 @@ static int http_open(URLContext *h, const char *uri, int flags,
     if (s->listen) {
         return http_listen(h, uri, flags, options);
     }
+    
+    /* Restore the globally cached auth state into this new HTTP context.
+     * This allows connection reuse with digest auth without requiring
+     * a new 401 challenge for every request when the nonce is still valid. */
+    pthread_mutex_lock(&nonce_lock);
+    if (cached_auth_state.auth_type == HTTP_AUTH_DIGEST && current_nonce[0] != '\0') {
+        memcpy(&s->auth_state, &cached_auth_state, sizeof(s->auth_state));
+        av_log(h, AV_LOG_INFO, "Restored cached auth state for new connection: auth_type=%d, nonce=%s\n", 
+               s->auth_state.auth_type, current_nonce);
+    }
+    pthread_mutex_unlock(&nonce_lock);
+    
     ret = http_open_cnx(h, options);
 bail_out:
     if (ret < 0) {
@@ -1490,6 +1503,9 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
     const char *method;
     int send_expect_100 = 0;
 
+    av_log(h, AV_LOG_INFO, "[CONN_DEBUG] http_connect called: path=%s, hd=%p, off=%lld\n", 
+           path, s->hd, (long long)off);
+
     av_bprint_init_for_buffer(&request, s->buffer, sizeof(s->buffer));
 
     /* send http header */
@@ -1594,12 +1610,19 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
         goto done;
     }
 
-    if ((err = ffurl_write(s->hd, request.str, request.len)) < 0)
+    av_log(h, AV_LOG_INFO, "[CONN_DEBUG] Before write: hd=%p, chunked_post=%d, auth_type=%d\n", 
+           s->hd, s->chunked_post, s->auth_state.auth_type);
+    
+    if ((err = ffurl_write(s->hd, request.str, request.len)) < 0) {
+        av_log(h, AV_LOG_ERROR, "[CONN_DEBUG] Request write failed: %s\n", av_err2str(err));
         goto done;
+    }
 
     if (s->post_data)
-        if ((err = ffurl_write(s->hd, s->post_data, s->post_datalen)) < 0)
+        if ((err = ffurl_write(s->hd, s->post_data, s->post_datalen)) < 0) {
+            av_log(h, AV_LOG_ERROR, "[CONN_DEBUG] Post data write failed: %s\n", av_err2str(err));
             goto done;
+        }
 
     /* init input buffer */
     s->buf_ptr          = s->buffer;
@@ -1614,34 +1637,32 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
 #if CONFIG_ZLIB
     s->compressed       = 0;
 #endif
+    av_log(h, AV_LOG_INFO, "[CONN_DEBUG] After buffer init: post=%d, post_data=%p, send_expect_100=%d, buf_ptr=%p, buf_end=%p\n",
+           post, s->post_data, send_expect_100, s->buf_ptr, s->buf_end);
+    
     if (post && !s->post_data && !send_expect_100) {
-        /* For chunked POST with digest auth, try to read response headers early
-         * to detect stale nonce before we start sending data chunks.
-         * This prevents sending all data only to find out the nonce expired.
+        /* For chunked POST with digest auth, check if server sent an early response.
+         * Some servers send 401 immediately when nonce is stale, before waiting for
+         * the POST body. Detecting this early saves bandwidth.
          * 
-         * Use a short timeout to avoid blocking if the server doesn't send
-         * an early response (some servers wait for the body before responding).
+         * We only check if there's already buffered data - we must NOT read from
+         * the socket as that would affect connection state and break reuse.
          */
-        if (s->chunked_post && s->auth_state.auth_type == HTTP_AUTH_DIGEST) {
-            URLContext *http_url_context = ffio_geturlcontext(s->hd);
-            int has_data = 0;
+        av_log(h, AV_LOG_INFO, "[CONN_DEBUG] Checking early response conditions: chunked_post=%d, auth_type=%d, buf_ptr < buf_end=%d\n",
+               s->chunked_post, s->auth_state.auth_type, (s->buf_ptr < s->buf_end));
+        
+        if (s->chunked_post && s->auth_state.auth_type == HTTP_AUTH_DIGEST && s->buf_ptr < s->buf_end) {
+            av_log(h, AV_LOG_INFO, "Chunked POST with digest auth - buffered data available, checking for early response\n");
             
-            av_log(h, AV_LOG_INFO, "Chunked POST with digest auth - checking for early response\n");
+            /* There's data in the buffer - try to parse it as HTTP headers */
+            err = http_read_header(h);
             
-            /* Check if data is available without blocking (100ms timeout) */
-            if (http_url_context && http_url_context->prot && http_url_context->prot->url_check) {
-                /* Use url_check to see if data is available */
-                has_data = http_url_context->prot->url_check(http_url_context, AVIO_FLAG_READ);
-            }
-            
-            /* Only try to read if data is available, otherwise skip to avoid deadlock */
-            if (has_data > 0) {
-                av_log(h, AV_LOG_INFO, "Data available, reading early response\n");
-                err = http_read_header(h);
-                av_log(h, AV_LOG_INFO, "Chunked POST header read\n");
+            if (err >= 0 || (err < 0 && s->http_code != 0)) {
+                /* We got a response */
+                av_log(h, AV_LOG_INFO, "Received early response: HTTP %d\n", s->http_code);
                 
                 /* If we got a 401, the nonce is stale - return error to trigger retry */
-                if (err < 0 && s->http_code == 401) {
+                if (s->http_code == 401) {
                     av_log(h, AV_LOG_INFO, "Received 401 on chunked POST - nonce is stale, will retry\n");
                     goto done;
                 }
@@ -1655,23 +1676,22 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
                     goto done;
                 }
                 
-                /* Success - we can now send chunks */
-                av_log(h, AV_LOG_INFO, "Server accepted chunked POST headers (status %d)\n", s->http_code);
+                /* Success - server accepted chunked POST headers, skip sending body */
+                av_log(h, AV_LOG_INFO, "Server accepted chunked POST headers (status %d), skipping body\n", s->http_code);
+                goto done;
             } else {
-                av_log(h, AV_LOG_INFO, "No early response available, proceeding with POST body\n");
+                /* Couldn't parse headers from buffered data - not enough data yet */
+                av_log(h, AV_LOG_DEBUG, "Buffered data incomplete, will read response after sending body\n");
             }
+        } else {
+            av_log(h, AV_LOG_INFO, "[CONN_DEBUG] Skipping early response check - will wait for header normally\n");
         }
-        
-        /* Pretend that it did work. We didn't read any header yet, since
-         * we've still to send the POST data, but the code calling this
-         * function will check http_code after we return. */
-        s->http_code = 200;
-        err = 0;
-        goto done;
     }
 
     /* wait for header */
+    av_log(h, AV_LOG_INFO, "[CONN_DEBUG] About to call http_read_header, hd=%p\n", s->hd);
     err = http_read_header(h);
+    av_log(h, AV_LOG_INFO, "[CONN_DEBUG] http_read_header returned: err=%d, http_code=%d\n", err, s->http_code);
     if (err < 0)
         goto done;
 
@@ -1681,6 +1701,8 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
     if (s->auth_state.digest_params.nonce[0] != '\0') {
         /* We received a nonce from the server, update the global copy */
         memcpy(current_nonce, s->auth_state.digest_params.nonce, sizeof(current_nonce));
+        /* Also cache the entire auth state for reuse */
+        memcpy(&cached_auth_state, &s->auth_state, sizeof(cached_auth_state));
         av_log(h, AV_LOG_INFO, "Server provided new nonce: %s\n", current_nonce);
     } else if (current_nonce[0] != '\0') {
         /* No nonce in response, but we have a global nonce - restore it */
@@ -1694,6 +1716,8 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
 
     err = (off == s->off) ? 0 : -1;
 done:
+    av_log(h, AV_LOG_INFO, "[CONN_DEBUG] http_connect_internal exiting: err=%d, http_code=%d, hd=%p, willclose=%d\n",
+           err, s->http_code, s->hd, s->willclose);
     av_freep(&authstr);
     av_freep(&proxyauthstr);
     return err;

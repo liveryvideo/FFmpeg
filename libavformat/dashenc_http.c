@@ -173,7 +173,8 @@ static void *thr_io_close(connection *conn);
 /* This method expects the lock to be already done.*/
 static void release_request(connection *conn) {
     const int64_t release_time = US_TO_MS(av_gettime());
-    av_log(NULL, AV_LOG_INFO, "release_request conn_nr: %d.\n", conn->nr);
+    av_log(NULL, AV_LOG_INFO, "[POOL_DEBUG] release_request conn_nr: %d, opened: %d (now available for reuse)\n", 
+           conn->nr, (int)conn->opened);
 
     if (conn->claimed) {
         free(conn->url);
@@ -416,7 +417,8 @@ static void *thr_io_close(connection *conn) { /* NOLINT(misc-no-recursion) */
     int ret = 0;
     int response_code = 0;
 
-    av_log(NULL, AV_LOG_INFO, "thr_io_close conn_nr: %d, out_addr: %p \n", conn->nr, conn->out);
+    av_log(NULL, AV_LOG_INFO, "[POOL_DEBUG] thr_io_close conn_nr: %d, out_addr: %p, opened: %d\n", 
+           conn->nr, conn->out, (int)conn->opened);
 
     if (conn->open_error) {
         ret = -1;
@@ -471,12 +473,13 @@ static int open_request_if_needed(connection *conn) {
 
     pthread_mutex_lock(&conn->open_mutex);
     if (conn->req_opened) {
+        av_log(conn->s, AV_LOG_WARNING, "[POOL_DEBUG] Request already opened on conn %d, skipping\n", conn->nr);
         pthread_mutex_unlock(&conn->open_mutex);
         return conn->nr;
     }
 
     if (!conn->opened) {
-        av_log(conn->s, AV_LOG_INFO, "Connection(%d) not yet open, opening and starting req %s\n", conn->nr, conn->url);
+        av_log(conn->s, AV_LOG_INFO, "[POOL_DEBUG] Connection(%d) not yet open, opening TCP and starting req %s\n", conn->nr, conn->url);
         ret = conn->s->io_open(conn->s, &(conn->out), conn->url, AVIO_FLAG_WRITE, &conn->options);
         if (ret < 0) {
             av_log(conn->s, AV_LOG_WARNING, "Could not open %s\n", conn->url);
@@ -493,10 +496,11 @@ static int open_request_if_needed(connection *conn) {
         goto error_close;
     }
 
-    av_log(conn->s, AV_LOG_INFO, "Connection(%d)\n", conn->nr);
-    av_log(conn->s, AV_LOG_INFO, "Connection(%d) start req on existing connection %s\n", conn->nr, conn->url);
+    av_log(conn->s, AV_LOG_INFO, "[POOL_DEBUG] Connection(%d) attempting to start new req on existing TCP connection %s\n", conn->nr, conn->url);
 
     ret = ff_http_do_new_request(http_url_context, conn->url);
+    av_log(conn->s, AV_LOG_INFO, "[POOL_DEBUG] ff_http_do_new_request returned: %d (%s) for conn %d\n", 
+           ret, av_err2str(ret), conn->nr);
     if (ret != 0) {
         const int64_t curr_time_ms = US_TO_MS(av_gettime());
         const int64_t idle_tims_ms = curr_time_ms - conn->release_time;
@@ -640,6 +644,7 @@ static connection *claim_connection(const char *url, const int need_new_connecti
     }
 
     if (conn_nr == -1) {
+        av_log(NULL, AV_LOG_INFO, "[POOL_DEBUG] No free connection found, creating new one for url: %s\n", url);
         conn = av_mallocz(sizeof(*conn));
         if (conn == NULL) {
             pthread_mutex_unlock(&connections_mutex);
@@ -673,8 +678,12 @@ static connection *claim_connection(const char *url, const int need_new_connecti
         LIST_INSERT_HEAD(&connections, conn, entries);
         av_log(NULL, AV_LOG_INFO, "No free connections so added one. Url: %s, conn_nr: %d\n", url, conn_nr);
     } else {
+        const int64_t idle_time = US_TO_MS(av_gettime()) - conn->release_time;
+        av_log(NULL, AV_LOG_INFO, "[POOL_DEBUG] Reusing connection %d (idle for %lld ms, opened=%d) for url: %s\n", 
+               conn_nr, (long long)idle_time, (int)conn->opened, url);
         pthread_mutex_lock(&conn->open_mutex);
         if (need_new_connection && conn->opened) {
+            av_log(NULL, AV_LOG_INFO, "[POOL_DEBUG] Closing connection %d because need_new_connection=1\n", conn_nr);
             conn->opened = false;
             ff_format_io_close(conn->s, &conn->out);
         }
