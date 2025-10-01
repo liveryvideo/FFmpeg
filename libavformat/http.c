@@ -1688,6 +1688,14 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
         }
     }
 
+    /* For chunked POST, skip reading the response header here.
+     * The server won't send the response until after receiving the body.
+     * The response will be read later when closing the connection. */
+    if (post && s->chunked_post) {
+        av_log(h, AV_LOG_INFO, "[CONN_DEBUG] Chunked POST detected, skipping http_read_header to avoid deadlock\n");
+        goto done;
+    }
+
     /* wait for header */
     av_log(h, AV_LOG_INFO, "[CONN_DEBUG] About to call http_read_header, hd=%p\n", s->hd);
     err = http_read_header(h);
@@ -2042,6 +2050,22 @@ static int http_shutdown(URLContext *h, int flags)
             curr_time_ms = US_TO_MS(av_gettime());
             req_time_ms = curr_time_ms - s->start_time_ms;
             av_log(h, AV_LOG_INFO, "XXX HTTP response: %d, duration: %"PRId64", url: %s \n", s->http_code, req_time_ms, s->location);
+
+            /* Update the global nonce cache after reading the response.
+             * This is critical for chunked POST requests where http_read_header()
+             * is called from http_shutdown() instead of http_open_cnx_internal(). */
+            pthread_mutex_lock(&nonce_lock);
+            if (s->auth_state.digest_params.nonce[0] != '\0') {
+                /* We received a nonce from the server, update the global copy */
+                memcpy(current_nonce, s->auth_state.digest_params.nonce, sizeof(current_nonce));
+                /* Also cache the entire auth state for reuse */
+                memcpy(&cached_auth_state, &s->auth_state, sizeof(cached_auth_state));
+                av_log(h, AV_LOG_INFO, "http_shutdown: Server provided new nonce: %s\n", current_nonce);
+            } else if (current_nonce[0] != '\0') {
+                /* No nonce in response, but we have a global nonce - restore it */
+                av_log(h, AV_LOG_INFO, "http_shutdown: Server did not provide new nonce, current_nonce still: %s\n", current_nonce);
+            }
+            pthread_mutex_unlock(&nonce_lock);
 
             if (read_ret < 0 && read_ret != AVERROR(EAGAIN))
                 ret = read_ret;
