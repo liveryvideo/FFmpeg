@@ -1645,46 +1645,109 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
          * Some servers send 401 immediately when nonce is stale, before waiting for
          * the POST body. Detecting this early saves bandwidth.
          * 
-         * We only check if there's already buffered data - we must NOT read from
-         * the socket as that would affect connection state and break reuse.
+         * We do a non-blocking read to check if the server already sent a response
+         * (e.g., 401 for stale nonce). If nothing is available, we proceed normally.
          */
-        av_log(h, AV_LOG_INFO, "[CONN_DEBUG] Checking early response conditions: chunked_post=%d, auth_type=%d, buf_ptr < buf_end=%d\n",
-               s->chunked_post, s->auth_state.auth_type, (s->buf_ptr < s->buf_end));
+        av_log(h, AV_LOG_INFO, "[CONN_DEBUG] Checking early response conditions: chunked_post=%d, auth_type=%d\n",
+               s->chunked_post, s->auth_state.auth_type);
         
-        if (s->chunked_post && s->auth_state.auth_type == HTTP_AUTH_DIGEST && s->buf_ptr < s->buf_end) {
-            av_log(h, AV_LOG_INFO, "Chunked POST with digest auth - buffered data available, checking for early response\n");
+        if (s->chunked_post && s->auth_state.auth_type == HTTP_AUTH_DIGEST) {
+            av_log(h, AV_LOG_INFO, "Chunked POST with digest auth - polling for early response (100ms timeout)\n");
             
-            /* There's data in the buffer - try to parse it as HTTP headers */
-            err = http_read_header(h);
+            /* Check if server already sent an early response (e.g., 401 for stale nonce).
+             * We poll the socket for up to 100ms with 1ms intervals to give time for the
+             * 401 response to arrive from the server. */
             
-            if (err >= 0 || (err < 0 && s->http_code != 0)) {
-                /* We got a response */
-                av_log(h, AV_LOG_INFO, "Received early response: HTTP %d\n", s->http_code);
-                
-                /* If we got a 401, the nonce is stale - return error to trigger retry */
-                if (s->http_code == 401) {
-                    av_log(h, AV_LOG_INFO, "Received 401 on chunked POST - nonce is stale, will retry\n");
-                    goto done;
+            int fd = ffurl_get_file_handle(s->hd);
+            int read_ret = AVERROR(EAGAIN);
+            int64_t start_time = av_gettime_relative();
+            const int64_t timeout_us = 100000; // 100ms timeout
+            const int64_t poll_interval_us = 1000; // 1ms between checks
+            int poll_count = 0;
+            
+            if (fd >= 0) {
+                /* Poll the socket to see if data becomes available */
+                while (av_gettime_relative() - start_time < timeout_us) {
+                    char peek_buf[1];
+                    int peek_ret = recv(fd, peek_buf, 1, MSG_PEEK | MSG_DONTWAIT);
+                    poll_count++;
+                    
+                    if (peek_ret > 0) {
+                        /* Data is available! Read it properly */
+                        int64_t elapsed = av_gettime_relative() - start_time;
+                        av_log(h, AV_LOG_INFO, "Socket peek detected data after %lld us (%d polls), reading response\n",
+                               (long long)elapsed, poll_count);
+                        read_ret = ffurl_read(s->hd, s->buffer, BUFFER_SIZE);
+                        break;
+                    } else if (peek_ret == 0) {
+                        av_log(h, AV_LOG_WARNING, "Socket peek returned 0 (connection closed)\n");
+                        read_ret = AVERROR_EOF;
+                        break;
+                    } else {
+                        /* No data yet (EAGAIN/EWOULDBLOCK) or error */
+                        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                            av_log(h, AV_LOG_WARNING, "Socket peek error: %s\n", strerror(errno));
+                            break;
+                        }
+                        /* Sleep for a short interval before next poll */
+                        av_usleep(poll_interval_us);
+                    }
                 }
                 
-                /* If we got any other error or non-2xx response, fail */
-                if (err < 0 || (s->http_code < 200 || s->http_code >= 300)) {
-                    av_log(h, AV_LOG_WARNING, "Unexpected response %d on chunked POST: %s\n", 
-                           s->http_code, av_err2str(err));
-                    if (err >= 0)
-                        err = AVERROR(EIO);
-                    goto done;
+                if (read_ret == AVERROR(EAGAIN)) {
+                    int64_t elapsed = av_gettime_relative() - start_time;
+                    av_log(h, AV_LOG_INFO, "No early response after polling for %lld us (%d polls)\n",
+                           (long long)elapsed, poll_count);
                 }
-                
-                /* Success - server accepted chunked POST headers, skip sending body */
-                av_log(h, AV_LOG_INFO, "Server accepted chunked POST headers (status %d), skipping body\n", s->http_code);
-                goto done;
             } else {
-                /* Couldn't parse headers from buffered data - not enough data yet */
-                av_log(h, AV_LOG_DEBUG, "Buffered data incomplete, will read response after sending body\n");
+                av_log(h, AV_LOG_WARNING, "Could not get file handle for socket peek, fd=%d\n", fd);
+            }
+            
+            if (read_ret > 0) {
+                /* Got data - parse it as HTTP headers */
+                s->buf_ptr = s->buffer;
+                s->buf_end = s->buffer + read_ret;
+                av_log(h, AV_LOG_INFO, "Early response data received (%d bytes), parsing headers\n", read_ret);
+            
+                /* There's data in the buffer - try to parse it as HTTP headers */
+                err = http_read_header(h);
+                
+                if (err >= 0 || (err < 0 && s->http_code != 0)) {
+                    /* We got a response */
+                    av_log(h, AV_LOG_INFO, "Received early response: HTTP %d\n", s->http_code);
+                    
+                    /* If we got a 401, the nonce is stale - return error to trigger retry */
+                    if (s->http_code == 401) {
+                        av_log(h, AV_LOG_INFO, "Received early 401 on chunked POST - nonce is stale, will retry\n");
+                        goto done;
+                    }
+                    
+                    /* If we got any other error or non-2xx response, fail */
+                    if (err < 0 || (s->http_code < 200 || s->http_code >= 300)) {
+                        av_log(h, AV_LOG_WARNING, "Unexpected early response %d on chunked POST: %s\n", 
+                               s->http_code, av_err2str(err));
+                        if (err >= 0)
+                            err = AVERROR(EIO);
+                        goto done;
+                    }
+                    
+                    /* Success - server accepted chunked POST headers, skip sending body */
+                    av_log(h, AV_LOG_INFO, "Server accepted chunked POST headers (status %d), skipping body\n", s->http_code);
+                    goto done;
+                } else {
+                    /* Couldn't parse headers from buffered data - not enough data yet */
+                    av_log(h, AV_LOG_DEBUG, "Buffered data incomplete, will read response after sending body\n");
+                }
+            } else if (read_ret == AVERROR(EAGAIN)) {
+                /* No data available yet - server hasn't sent early response */
+                av_log(h, AV_LOG_INFO, "No immediate early response available (EAGAIN), proceeding with chunked POST body\n");
+            } else {
+                /* Some other error occurred */
+                av_log(h, AV_LOG_WARNING, "Error during early response check: %s, proceeding with chunked POST body\n", 
+                       av_err2str(read_ret));
             }
         } else {
-            av_log(h, AV_LOG_INFO, "[CONN_DEBUG] Skipping early response check - will wait for header normally\n");
+            av_log(h, AV_LOG_INFO, "[CONN_DEBUG] Not checking for early response (not chunked POST with digest auth)\n");
         }
     }
 
