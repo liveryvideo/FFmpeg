@@ -1,7 +1,6 @@
 #include "dashenc_pool.h"
 
 #include <pthread.h>
-#include <stdio.h>
 #include <stdlib.h>
 
 /* clang-tidy complains about pthread types, because they're not included directly, but this is intended */
@@ -31,7 +30,7 @@ struct pool {
 static void * thread(void *arg);
 
 void * pool_start(void * (*thread_func)(void *), unsigned int threads) {
-	struct pool *pool = (struct pool *) malloc(sizeof(struct pool) + (threads-1) * sizeof(pthread_t));
+	struct pool *pool = (struct pool *) malloc(sizeof(struct pool) + ((threads-1) * sizeof(pthread_t)));
 
 	pthread_mutex_init(&pool->q_mtx, NULL);
 	pthread_cond_init(&pool->q_cnd, NULL);
