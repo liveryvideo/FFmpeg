@@ -1719,6 +1719,18 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
                     /* If we got a 401, the nonce is stale - return error to trigger retry */
                     if (s->http_code == 401) {
                         av_log(h, AV_LOG_INFO, "Received early 401 on chunked POST - nonce is stale, will retry\n");
+                        
+                        /* Update the global nonce from the 401 response before retrying */
+                        pthread_mutex_lock(&nonce_lock);
+                        if (s->auth_state.digest_params.nonce[0] != '\0') {
+                            /* We received a new nonce from the server, update the global copy */
+                            memcpy(current_nonce, s->auth_state.digest_params.nonce, sizeof(current_nonce));
+                            /* Also cache the entire auth state for reuse */
+                            memcpy(&cached_auth_state, &s->auth_state, sizeof(cached_auth_state));
+                            av_log(h, AV_LOG_INFO, "Updated global nonce from early 401 response: %s\n", current_nonce);
+                        }
+                        pthread_mutex_unlock(&nonce_lock);
+                        
                         goto done;
                     }
                     
