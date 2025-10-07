@@ -1634,25 +1634,30 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
     s->willclose        = 0;
     s->end_chunked_post = 0;
     s->end_header       = 0;
+    s->http_code        = 0;
 #if CONFIG_ZLIB
     s->compressed       = 0;
 #endif
     av_log(h, AV_LOG_INFO, "[CONN_DEBUG] After buffer init: post=%d, post_data=%p, send_expect_100=%d, buf_ptr=%p, buf_end=%p\n",
            post, s->post_data, send_expect_100, s->buf_ptr, s->buf_end);
     
-    if (post && !s->post_data && !send_expect_100) {
+    if (post && !s->post_data) {
         /* For chunked POST with digest auth, check if server sent an early response.
          * Some servers send 401 immediately when nonce is stale, before waiting for
          * the POST body. Detecting this early saves bandwidth.
          * 
          * We do a non-blocking read to check if the server already sent a response
          * (e.g., 401 for stale nonce). If nothing is available, we proceed normally.
+         * 
+         * This includes both:
+         * - Expect: 100-continue requests (initial auth) where server may reject immediately
+         * - Regular chunked POST with stale nonce where server rejects before consuming body
          */
-        av_log(h, AV_LOG_INFO, "[CONN_DEBUG] Checking early response conditions: chunked_post=%d, auth_type=%d\n",
-               s->chunked_post, s->auth_state.auth_type);
+        av_log(h, AV_LOG_INFO, "[CONN_DEBUG] Checking early response conditions: chunked_post=%d, auth_type=%d, send_expect_100=%d\n",
+               s->chunked_post, s->auth_state.auth_type, send_expect_100);
         
-        if (s->chunked_post && s->auth_state.auth_type == HTTP_AUTH_DIGEST) {
-            av_log(h, AV_LOG_INFO, "Chunked POST with digest auth - polling for early response (100ms timeout)\n");
+        if (s->chunked_post) {
+            av_log(h, AV_LOG_INFO, "Chunked POST - polling for early response (100ms timeout)\n");
             
             /* Check if server already sent an early response (e.g., 401 for stale nonce).
              * We poll the socket for up to 100ms with 1ms intervals to give time for the
