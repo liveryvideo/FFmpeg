@@ -552,7 +552,7 @@ static void *thr_io_write(void *arg) {
         if (ret < 0) {
             av_log(conn->s, AV_LOG_ERROR, "failed to open request, conn_nr: %d\n", conn->nr);
             // Even if opening failed, we need to check if chunks_done is set
-            // to properly close the request and avoid infinite loop
+            // to properly close the request and avoid calling open_request_if_needed() again
             if (chunks_done) {
                 thr_io_close(conn);
                 continue;

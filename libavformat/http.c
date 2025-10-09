@@ -199,7 +199,6 @@ static const AVOption options[] = {
     { NULL }
 };
 
-static void http_invalidate_auth(URLContext *h, HTTPAuthState *s);
 static int http_connect(URLContext *h, const char *path, const char *local_path,
                         const char *hoststr, const char *auth,
                         const char *proxyauth);
@@ -498,7 +497,6 @@ int ff_http_do_new_request2(URLContext *h, const char *uri, AVDictionary **opts)
     char hostname1[1024], hostname2[1024], proto1[10], proto2[10];
     int port1, port2;
 
-    http_invalidate_auth(h, &s->auth_state);
     s->start_time_ms = US_TO_MS(av_gettime());
 
     if (!h->prot ||
@@ -1470,12 +1468,6 @@ static void bprint_escaped_path(AVBPrint *bp, const char *path)
     }
 }
 
-static void http_invalidate_auth(URLContext *h, HTTPAuthState *s)
-{
-    /* Auth invalidation is now handled by 401 responses from the server.
-     * The stale flag will be set when parsing WWW-Authenticate headers. */
-}
-
 static int http_connect(URLContext *h, const char *path, const char *local_path,
                         const char *hoststr, const char *auth,
                         const char *proxyauth)
@@ -1593,13 +1585,13 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
     }
 
     if ((err = ffurl_write(s->hd, request.str, request.len)) < 0) {
-        av_log(h, AV_LOG_ERROR, "[CONN_DEBUG] Request write failed: %s\n", av_err2str(err));
+        av_log(h, AV_LOG_INFO, "[CONN_DEBUG] Request write failed: %s\n", av_err2str(err));
         goto done;
     }
 
     if (s->post_data)
         if ((err = ffurl_write(s->hd, s->post_data, s->post_datalen)) < 0) {
-            av_log(h, AV_LOG_ERROR, "[CONN_DEBUG] Post data write failed: %s\n", av_err2str(err));
+            av_log(h, AV_LOG_INFO, "[CONN_DEBUG] Post data write failed: %s\n", av_err2str(err));
             goto done;
         }
 
@@ -1621,7 +1613,8 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
     if (post && !s->post_data) {
         /* For chunked POST with digest auth, check if server sent an early response.
          * Some servers send 401 immediately when nonce is stale, before waiting for
-         * the POST body. Detecting this early saves bandwidth.
+         * the POST body. Detecting this early prevents us from waiting until the full
+         * body has been send before retrying, which is important for low latency scenarios.
          * 
          * We do a non-blocking read to check if the server already sent a response
          * (e.g., 401 for stale nonce). If nothing is available, we proceed normally.
@@ -1630,11 +1623,7 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
          * - Expect: 100-continue requests (initial auth) where server may reject immediately
          * - Regular chunked POST with stale nonce where server rejects before consuming body
          */
-        if (s->chunked_post) {
-            /* Check if server already sent an early response (e.g., 401 for stale nonce).
-             * We poll the socket for up to 100ms with 1ms intervals to give time for the
-             * 401 response to arrive from the server. */
-            
+        if (s->chunked_post) {            
             int fd = ffurl_get_file_handle(s->hd);
             int read_ret = AVERROR(EAGAIN);
             int64_t start_time = av_gettime_relative();
@@ -1680,17 +1669,14 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
                 s->buf_end = s->buffer + read_ret;
                 av_log(h, AV_LOG_INFO, "Early response data received (%d bytes), parsing headers\n", read_ret);
             
-                /* There's data in the buffer - try to parse it as HTTP headers */
                 err = http_read_header(h);
                 
                 if (err >= 0 || (err < 0 && s->http_code != 0)) {
-                    /* We got a response */
                     av_log(h, AV_LOG_INFO, "Received early response: HTTP %d\n", s->http_code);
                     
-                    /* If we got a 401, the nonce is stale - return error to trigger retry */
                     if (s->http_code == 401) {
-                        av_log(h, AV_LOG_INFO, "Received early 401 on chunked POST - nonce is stale, will retry\n");
                         int64_t req_time_ms = US_TO_MS(av_gettime()) - s->start_time_ms;
+                        av_log(h, AV_LOG_INFO, "Received early 401 on chunked POST - nonce is stale, will retry\n");
                         av_log(h, AV_LOG_INFO, "HTTP response: %d, duration: %"PRId64", url: %s \n", s->http_code, req_time_ms, s->location);
                         /* The new nonce from the 401 response is already stored in s->auth_state */
                         /* and will be used for the retry attempt by the caller */
@@ -1706,18 +1692,14 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
                         goto done;
                     }
                     
-                    /* Success - server accepted chunked POST headers, skip sending body */
                     av_log(h, AV_LOG_INFO, "Server accepted chunked POST headers (status %d), skipping body\n", s->http_code);
                     goto done;
                 } else {
-                    /* Couldn't parse headers from buffered data - not enough data yet */
                     av_log(h, AV_LOG_DEBUG, "Buffered data incomplete, will read response after sending body\n");
                 }
             } else if (read_ret == AVERROR(EAGAIN)) {
-                /* No data available yet - server hasn't sent early response */
                 av_log(h, AV_LOG_INFO, "No immediate early response available (EAGAIN), proceeding with chunked POST body\n");
             } else {
-                /* Some other error occurred */
                 av_log(h, AV_LOG_WARNING, "Error during early response check: %s, proceeding with chunked POST body\n", 
                        av_err2str(read_ret));
             }
