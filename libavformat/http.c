@@ -151,6 +151,9 @@ typedef struct HTTPContext {
     unsigned int retry_after;
     int reconnect_max_retries;
     int reconnect_delay_total_max;
+    /* Flag indicating early 401 was detected on chunked POST without sending body.
+     * When set, the connection is still usable and should not be closed before retry. */
+    int early_auth_retry;
 } HTTPContext;
 
 #define OFFSET(x) offsetof(HTTPContext, x)
@@ -379,6 +382,7 @@ static int http_open_cnx(URLContext *h, AVDictionary **options)
     char *cached;
 
     s->start_time_ms = US_TO_MS(av_gettime());
+    s->early_auth_retry = 0;
 
 redo:
 
@@ -435,7 +439,14 @@ redo:
     if (s->http_code == 401) {
         if ((cur_auth_type == HTTP_AUTH_NONE || s->auth_state.stale) &&
             s->auth_state.auth_type != HTTP_AUTH_NONE && auth_attempts < 4) {
-            ffurl_closep(&s->hd);
+            /* If early_auth_retry flag is set, we detected a 401 before sending the body
+             * and the connection is still usable. Don't close it. */
+            if (!s->early_auth_retry) {
+                ffurl_closep(&s->hd);
+            } else {
+                av_log(h, AV_LOG_INFO, "Early auth retry - keeping connection open\n");
+                s->early_auth_retry = 0;
+            }
             goto redo;
         } else
             goto fail;
@@ -1676,10 +1687,16 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
                     
                     if (s->http_code == 401) {
                         int64_t req_time_ms = US_TO_MS(av_gettime()) - s->start_time_ms;
-                        av_log(h, AV_LOG_INFO, "Received early 401 on chunked POST - nonce is stale, will retry\n");
+                        av_log(h, AV_LOG_INFO, "Received early 401 on chunked POST - nonce is stale%s\n",
+                               s->willclose ? ", server will close connection" : ", keeping connection open for retry");
                         av_log(h, AV_LOG_INFO, "HTTP response: %d, duration: %"PRId64", url: %s \n", s->http_code, req_time_ms, s->location);
-                        /* The new nonce from the 401 response is already stored in s->auth_state */
-                        /* and will be used for the retry attempt by the caller */
+                        /* The new nonce from the 401 response is already stored in s->auth_state.
+                         * Only keep connection open if server didn't send Connection: close */
+                        if (!s->willclose) {
+                            s->buf_ptr = s->buffer;
+                            s->buf_end = s->buffer;
+                            s->early_auth_retry = 1;
+                        }
                         goto done;
                     }
                     

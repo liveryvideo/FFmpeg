@@ -504,6 +504,7 @@ static int open_request_if_needed(connection *conn) {
 
 exit_opened:
     conn->req_opened = true;
+    conn->open_error = false;  /* Clear any error from previous failed attempts */
     pthread_mutex_unlock(&conn->open_mutex);
     return conn->nr;
 
