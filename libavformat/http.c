@@ -199,10 +199,6 @@ static const AVOption options[] = {
     { NULL }
 };
 
-static char current_nonce[300];
-static HTTPAuthState cached_auth_state = {0};
-static pthread_mutex_t nonce_lock = PTHREAD_MUTEX_INITIALIZER;
-
 static void http_invalidate_auth(URLContext *h, HTTPAuthState *s);
 static int http_connect(URLContext *h, const char *path, const char *local_path,
                         const char *hoststr, const char *auth,
@@ -769,17 +765,6 @@ static int http_open(URLContext *h, const char *uri, int flags,
     if (s->listen) {
         return http_listen(h, uri, flags, options);
     }
-    
-    /* Restore the globally cached auth state into this new HTTP context.
-     * This allows connection reuse with digest auth without requiring
-     * a new 401 challenge for every request when the nonce is still valid. */
-    pthread_mutex_lock(&nonce_lock);
-    if (cached_auth_state.auth_type == HTTP_AUTH_DIGEST && current_nonce[0] != '\0') {
-        memcpy(&s->auth_state, &cached_auth_state, sizeof(s->auth_state));
-        av_log(h, AV_LOG_INFO, "Restored cached auth state for new connection: auth_type=%d, nonce=%s\n", 
-               s->auth_state.auth_type, current_nonce);
-    }
-    pthread_mutex_unlock(&nonce_lock);
     
     ret = http_open_cnx(h, options);
 bail_out:
@@ -1503,9 +1488,6 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
     const char *method;
     int send_expect_100 = 0;
 
-    av_log(h, AV_LOG_INFO, "[CONN_DEBUG] http_connect called: path=%s, hd=%p, off=%lld\n", 
-           path, s->hd, (long long)off);
-
     av_bprint_init_for_buffer(&request, s->buffer, sizeof(s->buffer));
 
     /* send http header */
@@ -1610,9 +1592,6 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
         goto done;
     }
 
-    av_log(h, AV_LOG_INFO, "[CONN_DEBUG] Before write: hd=%p, chunked_post=%d, auth_type=%d\n", 
-           s->hd, s->chunked_post, s->auth_state.auth_type);
-    
     if ((err = ffurl_write(s->hd, request.str, request.len)) < 0) {
         av_log(h, AV_LOG_ERROR, "[CONN_DEBUG] Request write failed: %s\n", av_err2str(err));
         goto done;
@@ -1638,8 +1617,6 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
 #if CONFIG_ZLIB
     s->compressed       = 0;
 #endif
-    av_log(h, AV_LOG_INFO, "[CONN_DEBUG] After buffer init: post=%d, post_data=%p, send_expect_100=%d, buf_ptr=%p, buf_end=%p\n",
-           post, s->post_data, send_expect_100, s->buf_ptr, s->buf_end);
     
     if (post && !s->post_data) {
         /* For chunked POST with digest auth, check if server sent an early response.
@@ -1653,12 +1630,7 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
          * - Expect: 100-continue requests (initial auth) where server may reject immediately
          * - Regular chunked POST with stale nonce where server rejects before consuming body
          */
-        av_log(h, AV_LOG_INFO, "[CONN_DEBUG] Checking early response conditions: chunked_post=%d, auth_type=%d, send_expect_100=%d\n",
-               s->chunked_post, s->auth_state.auth_type, send_expect_100);
-        
         if (s->chunked_post) {
-            av_log(h, AV_LOG_INFO, "Chunked POST - polling for early response (100ms timeout)\n");
-            
             /* Check if server already sent an early response (e.g., 401 for stale nonce).
              * We poll the socket for up to 100ms with 1ms intervals to give time for the
              * 401 response to arrive from the server. */
@@ -1698,12 +1670,6 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
                         av_usleep(poll_interval_us);
                     }
                 }
-                
-                if (read_ret == AVERROR(EAGAIN)) {
-                    int64_t elapsed = av_gettime_relative() - start_time;
-                    av_log(h, AV_LOG_INFO, "No early response after polling for %lld us (%d polls)\n",
-                           (long long)elapsed, poll_count);
-                }
             } else {
                 av_log(h, AV_LOG_WARNING, "Could not get file handle for socket peek, fd=%d\n", fd);
             }
@@ -1724,18 +1690,10 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
                     /* If we got a 401, the nonce is stale - return error to trigger retry */
                     if (s->http_code == 401) {
                         av_log(h, AV_LOG_INFO, "Received early 401 on chunked POST - nonce is stale, will retry\n");
-                        
-                        /* Update the global nonce from the 401 response before retrying */
-                        pthread_mutex_lock(&nonce_lock);
-                        if (s->auth_state.digest_params.nonce[0] != '\0') {
-                            /* We received a new nonce from the server, update the global copy */
-                            memcpy(current_nonce, s->auth_state.digest_params.nonce, sizeof(current_nonce));
-                            /* Also cache the entire auth state for reuse */
-                            memcpy(&cached_auth_state, &s->auth_state, sizeof(cached_auth_state));
-                            av_log(h, AV_LOG_INFO, "Updated global nonce from early 401 response: %s\n", current_nonce);
-                        }
-                        pthread_mutex_unlock(&nonce_lock);
-                        
+                        int64_t req_time_ms = US_TO_MS(av_gettime()) - s->start_time_ms;
+                        av_log(h, AV_LOG_INFO, "HTTP response: %d, duration: %"PRId64", url: %s \n", s->http_code, req_time_ms, s->location);
+                        /* The new nonce from the 401 response is already stored in s->auth_state */
+                        /* and will be used for the retry attempt by the caller */
                         goto done;
                     }
                     
@@ -1763,8 +1721,6 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
                 av_log(h, AV_LOG_WARNING, "Error during early response check: %s, proceeding with chunked POST body\n", 
                        av_err2str(read_ret));
             }
-        } else {
-            av_log(h, AV_LOG_INFO, "[CONN_DEBUG] Not checking for early response (not chunked POST with digest auth)\n");
         }
     }
 
@@ -1772,40 +1728,19 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
      * The server won't send the response until after receiving the body.
      * The response will be read later when closing the connection. */
     if (post && s->chunked_post) {
-        av_log(h, AV_LOG_INFO, "[CONN_DEBUG] Chunked POST detected, skipping http_read_header to avoid deadlock\n");
         goto done;
     }
 
     /* wait for header */
-    av_log(h, AV_LOG_INFO, "[CONN_DEBUG] About to call http_read_header, hd=%p\n", s->hd);
     err = http_read_header(h);
-    av_log(h, AV_LOG_INFO, "[CONN_DEBUG] http_read_header returned: err=%d, http_code=%d\n", err, s->http_code);
     if (err < 0)
         goto done;
-
-    /* Update the global nonce if we received a new one from the server.
-     * This allows the nonce to be reused across different HTTP contexts. */
-    pthread_mutex_lock(&nonce_lock);
-    if (s->auth_state.digest_params.nonce[0] != '\0') {
-        /* We received a nonce from the server, update the global copy */
-        memcpy(current_nonce, s->auth_state.digest_params.nonce, sizeof(current_nonce));
-        /* Also cache the entire auth state for reuse */
-        memcpy(&cached_auth_state, &s->auth_state, sizeof(cached_auth_state));
-        av_log(h, AV_LOG_INFO, "Server provided new nonce: %s\n", current_nonce);
-    } else if (current_nonce[0] != '\0') {
-        /* No nonce in response, but we have a global nonce - restore it */
-        av_log(h, AV_LOG_INFO, "Server did not provided new nonce, restoring current_nonce: %s\n", current_nonce);
-        memcpy(s->auth_state.digest_params.nonce, current_nonce, sizeof(current_nonce));
-    }
-    pthread_mutex_unlock(&nonce_lock);
 
     if (s->new_location)
         s->off = off;
 
     err = (off == s->off) ? 0 : -1;
 done:
-    av_log(h, AV_LOG_INFO, "[CONN_DEBUG] http_connect_internal exiting: err=%d, http_code=%d, hd=%p, willclose=%d\n",
-           err, s->http_code, s->hd, s->willclose);
     av_freep(&authstr);
     av_freep(&proxyauthstr);
     return err;
@@ -2121,7 +2056,6 @@ static int http_shutdown(URLContext *h, int flags)
         ret = ret > 0 ? 0 : ret;
         /* flush the receive buffer when it is write only mode */
         if (!(flags & AVIO_FLAG_READ)) {
-            char buf[1024];
             int read_ret;
             //s->hd->flags |= AVIO_FLAG_NONBLOCK;
 
@@ -2129,23 +2063,7 @@ static int http_shutdown(URLContext *h, int flags)
 
             curr_time_ms = US_TO_MS(av_gettime());
             req_time_ms = curr_time_ms - s->start_time_ms;
-            av_log(h, AV_LOG_INFO, "XXX HTTP response: %d, duration: %"PRId64", url: %s \n", s->http_code, req_time_ms, s->location);
-
-            /* Update the global nonce cache after reading the response.
-             * This is critical for chunked POST requests where http_read_header()
-             * is called from http_shutdown() instead of http_open_cnx_internal(). */
-            pthread_mutex_lock(&nonce_lock);
-            if (s->auth_state.digest_params.nonce[0] != '\0') {
-                /* We received a nonce from the server, update the global copy */
-                memcpy(current_nonce, s->auth_state.digest_params.nonce, sizeof(current_nonce));
-                /* Also cache the entire auth state for reuse */
-                memcpy(&cached_auth_state, &s->auth_state, sizeof(cached_auth_state));
-                av_log(h, AV_LOG_INFO, "http_shutdown: Server provided new nonce: %s\n", current_nonce);
-            } else if (current_nonce[0] != '\0') {
-                /* No nonce in response, but we have a global nonce - restore it */
-                av_log(h, AV_LOG_INFO, "http_shutdown: Server did not provide new nonce, current_nonce still: %s\n", current_nonce);
-            }
-            pthread_mutex_unlock(&nonce_lock);
+            av_log(h, AV_LOG_INFO, "HTTP response: %d, duration: %"PRId64", url: %s \n", s->http_code, req_time_ms, s->location);
 
             if (read_ret < 0 && read_ret != AVERROR(EAGAIN))
                 ret = read_ret;

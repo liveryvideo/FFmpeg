@@ -417,9 +417,6 @@ static void *thr_io_close(connection *conn) { /* NOLINT(misc-no-recursion) */
     int ret = 0;
     int response_code = 0;
 
-    av_log(NULL, AV_LOG_INFO, "[POOL_DEBUG] thr_io_close conn_nr: %d, out_addr: %p, opened: %d\n", 
-           conn->nr, conn->out, (int)conn->opened);
-
     if (conn->open_error) {
         ret = -1;
         response_code = 0;
@@ -473,7 +470,6 @@ static int open_request_if_needed(connection *conn) {
 
     pthread_mutex_lock(&conn->open_mutex);
     if (conn->req_opened) {
-        av_log(conn->s, AV_LOG_WARNING, "[POOL_DEBUG] Request already opened on conn %d, skipping\n", conn->nr);
         pthread_mutex_unlock(&conn->open_mutex);
         return conn->nr;
     }
@@ -499,8 +495,6 @@ static int open_request_if_needed(connection *conn) {
     av_log(conn->s, AV_LOG_INFO, "[POOL_DEBUG] Connection(%d) attempting to start new req on existing TCP connection %s\n", conn->nr, conn->url);
 
     ret = ff_http_do_new_request(http_url_context, conn->url);
-    av_log(conn->s, AV_LOG_INFO, "[POOL_DEBUG] ff_http_do_new_request returned: %d (%s) for conn %d\n", 
-           ret, av_err2str(ret), conn->nr);
     if (ret != 0) {
         const int64_t curr_time_ms = US_TO_MS(av_gettime());
         const int64_t idle_tims_ms = curr_time_ms - conn->release_time;
@@ -534,17 +528,10 @@ static void *thr_io_write(void *arg) {
     connection *conn = (connection *)arg;
     //https://computing.llnl.gov/tutorials/pthreads/#ConditionVariables
 
-    av_log(NULL, AV_LOG_INFO, "[WORKER_DEBUG] Worker thread started for conn_nr: %d\n", conn->nr);
-
     for (;;) {
-        av_log(NULL, AV_LOG_INFO, "[WORKER_DEBUG] Worker loop iteration start, conn_nr: %d\n", conn->nr);
         pthread_mutex_lock(&conn->chunks.mutex);
-        av_log(NULL, AV_LOG_INFO, "[WORKER_DEBUG] Acquired mutex, conn_nr: %d, chunks_done: %d, chunk_available: %d\n", 
-               conn->nr, (int)conn->chunks_done, chunk_is_available(&conn->chunks));
         while (!chunk_is_available(&conn->chunks) && !conn->chunks_done) {
-            av_log(NULL, AV_LOG_INFO, "[WORKER_DEBUG] About to wait on cond var, conn_nr: %d\n", conn->nr);
             pthread_cond_wait(&conn->chunks.cv, &conn->chunks.mutex);
-            av_log(NULL, AV_LOG_INFO, "[WORKER_DEBUG] Woke up from cond wait, conn_nr: %d\n", conn->nr);
             if (conn->cleanup_requested || should_stop) {
                 pthread_mutex_unlock(&conn->chunks.mutex);
                 release_request(conn);
@@ -553,15 +540,11 @@ static void *thr_io_write(void *arg) {
         }
         const bool chunks_done = conn->chunks_done;
         const bool has_chunks = chunk_is_available(&conn->chunks);
-        av_log(NULL, AV_LOG_INFO, "[WORKER_DEBUG] After wait loop, conn_nr: %d, chunks_done: %d, has_chunks: %d\n", 
-               conn->nr, (int)chunks_done, (int)has_chunks);
         pthread_mutex_unlock(&conn->chunks.mutex);
 
         // If chunks_done is set but there are no chunks to write, close immediately without opening
         if (chunks_done && !has_chunks) {
-            av_log(NULL, AV_LOG_INFO, "[WORKER_DEBUG] Calling thr_io_close (no chunks), conn_nr: %d\n", conn->nr);
             thr_io_close(conn);
-            av_log(NULL, AV_LOG_INFO, "[WORKER_DEBUG] Returned from thr_io_close (no chunks), conn_nr: %d\n", conn->nr);
             continue;
         }
 
@@ -583,9 +566,7 @@ static void *thr_io_write(void *arg) {
         }
 
         if (chunks_done) {
-            av_log(NULL, AV_LOG_INFO, "[WORKER_DEBUG] Calling thr_io_close (after chunks), conn_nr: %d\n", conn->nr);
             thr_io_close(conn);
-            av_log(NULL, AV_LOG_INFO, "[WORKER_DEBUG] Returned from thr_io_close (after chunks), conn_nr: %d\n", conn->nr);
             // after this no other action should be done on conn until a new request is started so make sure there are no statements below this.
             continue;
         }
@@ -794,14 +775,11 @@ int pool_io_open(AVFormatContext *ctx, const char *filename,
  * Closes the request.
  */
 static void pool_conn_close(connection *conn) {
-    av_log(NULL, AV_LOG_INFO, "[WORKER_DEBUG] pool_conn_close called, conn_nr: %d, setting chunks_done=true\n", conn->nr);
     conn->chunks_done = true;
 
     pthread_mutex_lock(&conn->chunks.mutex);
-    av_log(NULL, AV_LOG_INFO, "[WORKER_DEBUG] pool_conn_close signaling cond var, conn_nr: %d\n", conn->nr);
     pthread_cond_signal(&conn->chunks.cv);
     pthread_mutex_unlock(&conn->chunks.mutex);
-    av_log(NULL, AV_LOG_INFO, "[WORKER_DEBUG] pool_conn_close done, conn_nr: %d\n", conn->nr);
 }
 
 void pool_io_close(AVFormatContext *ctx, const char *filename, const int conn_nr) {
