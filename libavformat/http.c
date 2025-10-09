@@ -198,11 +198,6 @@ static const AVOption options[] = {
     { NULL }
 };
 
-static int64_t nonce_birth_time = -1;
-static pthread_mutex_t nonce_birth_time_lock = PTHREAD_MUTEX_INITIALIZER;
-static char current_nonce[300];
-
-static void http_invalidate_auth(URLContext *h, HTTPAuthState *s);
 static int http_connect(URLContext *h, const char *path, const char *local_path,
                         const char *hoststr, const char *auth,
                         const char *proxyauth);
@@ -499,7 +494,6 @@ int ff_http_do_new_request2(URLContext *h, const char *uri, AVDictionary **opts)
     char hostname1[1024], hostname2[1024], proto1[10], proto2[10];
     int port1, port2;
 
-    http_invalidate_auth(h, &s->auth_state);
     s->start_time_ms = US_TO_MS(av_gettime());
 
     if (!h->prot ||
@@ -1470,36 +1464,6 @@ static void bprint_escaped_path(AVBPrint *bp, const char *path)
     }
 }
 
-#define unlikely(x) __builtin_expect(!!(x),0)
-
-static atomic_int_fast64_t nonce_expire_time;
-void av_set_nonce_expire_time(const int64_t time)
-{
-    nonce_expire_time = time;
-}
-
-static void http_invalidate_auth(URLContext *h, HTTPAuthState *s)
-{
-    if (s->auth_type != HTTP_AUTH_NONE && unlikely(av_gettime() - s->used_nonce_birth_time > nonce_expire_time)) {
-        time_t time_sec = US_TO_S(s->used_nonce_birth_time);
-        struct timeval nonce_birth_time = {
-            .tv_sec = time_sec,
-            .tv_usec = s->used_nonce_birth_time - S_TO_US(time_sec)
-        };
-
-        char tmp_buf[64] = {0};
-        struct tm local_nonce_birth_time = {0};
-        localtime_r(&time_sec, &local_nonce_birth_time);
-        strftime(tmp_buf, sizeof(tmp_buf), "%Y-%m-%d %H:%M:%S", &local_nonce_birth_time);
-
-        char *time_buf = av_asprintf("%s.%06lu", tmp_buf, nonce_birth_time.tv_usec);
-        av_log(h, AV_LOG_INFO, "Nonce born at %s has expired, requesting for a new one\n", time_buf);
-        av_free(time_buf);
-
-        s->auth_type = HTTP_AUTH_NONE;
-    }
-}
-
 static int http_connect(URLContext *h, const char *path, const char *local_path,
                         const char *hoststr, const char *auth,
                         const char *proxyauth)
@@ -1649,14 +1613,6 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
     err = http_read_header(h);
     if (err < 0)
         goto done;
-
-    pthread_mutex_lock(&nonce_birth_time_lock);
-    if (memcmp(current_nonce, s->auth_state.digest_params.nonce, sizeof(current_nonce))) {
-        memcpy(current_nonce, s->auth_state.digest_params.nonce, sizeof(current_nonce));
-        nonce_birth_time = av_gettime();
-    }
-    s->auth_state.used_nonce_birth_time = nonce_birth_time;
-    pthread_mutex_unlock(&nonce_birth_time_lock);
 
     if (s->new_location)
         s->off = off;
@@ -1978,7 +1934,6 @@ static int http_shutdown(URLContext *h, int flags)
         ret = ret > 0 ? 0 : ret;
         /* flush the receive buffer when it is write only mode */
         if (!(flags & AVIO_FLAG_READ)) {
-            char buf[1024];
             int read_ret;
             //s->hd->flags |= AVIO_FLAG_NONBLOCK;
 
