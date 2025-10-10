@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -82,6 +83,7 @@ typedef struct connection {
     pthread_mutex_t open_mutex;
 
     _Atomic int64_t release_time;    /* Time the last request of the connection has finished */
+    _Atomic int64_t connection_open_time;  /* Time when the TCP connection was opened (milliseconds) */
     AVFormatContext *s;      /* Used to clean up the TCP connection if closing of a request fails */
     pthread_t w_thread;      /* Thread that is used to write the chunks */
     LIST_ENTRY(connection) entries;
@@ -124,6 +126,13 @@ static ConnectionNumbersBitmapType connection_numbers_bitmap[kConnectionNumbersB
 
 #include <strings.h>
 #define ffz(x) ffs(~(x))
+
+static atomic_int_fast64_t max_http_connection_duration_ms;
+void av_set_max_http_connection_duration(const int64_t duration_ms)
+{
+    av_log(NULL, AV_LOG_INFO, "av_set_max_http_connection_duration: %"PRId64"\n", duration_ms);
+    max_http_connection_duration_ms = duration_ms;
+}
 
 static int get_connection_number(void) {
     pthread_mutex_lock(&connection_numbers_bitmap_mutex);
@@ -294,6 +303,7 @@ static int io_open_for_retry(connection *conn) {
         }
 
         conn->opened = true;
+        conn->connection_open_time = US_TO_MS(av_gettime());
         pthread_mutex_unlock(&conn->open_mutex);
         return ret;
     }
@@ -318,6 +328,8 @@ static int io_open_for_retry(connection *conn) {
 error_close:
     pthread_mutex_lock(&conn->open_mutex);
     ff_format_io_close(ctx, &conn->out);
+    conn->opened = false;
+    conn->connection_open_time = 0;
 
 error:
     conn->open_error = true;
@@ -392,6 +404,7 @@ static void connection_exit(connection *conn) {
 
     pthread_mutex_lock(&conn->open_mutex);
     conn->opened = false;
+    conn->connection_open_time = 0;
     ff_format_io_close(conn->s, &conn->out);
     pthread_mutex_unlock(&conn->open_mutex);
 
@@ -441,6 +454,7 @@ static void *thr_io_close(connection *conn) { /* NOLINT(misc-no-recursion) */
         //check why conn->s (AVFormatContext) becomes NULL
         pthread_mutex_lock(&conn->open_mutex);
         conn->opened = false;
+        conn->connection_open_time = 0;
         if (conn->s != NULL) {
             ff_format_io_close(conn->s, &conn->out);
         }
@@ -484,6 +498,7 @@ static int open_request_if_needed(connection *conn) {
         }
 
         conn->opened = true;
+        conn->connection_open_time = US_TO_MS(av_gettime());
         goto exit_opened;
     }
 
@@ -512,6 +527,7 @@ exit_opened:
 error_close:
     ff_format_io_close(conn->s, &conn->out);
     conn->opened = false;
+    conn->connection_open_time = 0;
 
 error:
     abort_if_needed(conn->must_succeed);
@@ -660,8 +676,28 @@ static connection *claim_connection(const char *url, const int need_new_connecti
         av_log(NULL, AV_LOG_INFO, "No free connections so added one. Url: %s, conn_nr: %d\n", url, conn_nr);
     } else {
         pthread_mutex_lock(&conn->open_mutex);
+        const int64_t curr_time_ms = US_TO_MS(av_gettime());
+        const int64_t connection_age_ms = curr_time_ms - conn->connection_open_time;
+        av_log(NULL, AV_LOG_INFO, "Connection(%d) has been open for %"PRId64"ms (max=%"PRId64"ms). url: %s\n", 
+                       conn->nr, connection_age_ms, max_http_connection_duration_ms, url);
+        
+        /* Check if connection has been open for too long */
+        if (conn->opened && conn->connection_open_time != 0) {
+            // const int64_t curr_time_ms = US_TO_MS(av_gettime());
+            // const int64_t connection_age_ms = curr_time_ms - conn->connection_open_time;
+            
+            if (connection_age_ms >= max_http_connection_duration_ms) {
+                av_log(NULL, AV_LOG_INFO, "Connection(%d) has been open for %"PRId64"ms (max=%"PRId64"ms), closing it. url: %s\n", 
+                       conn->nr, connection_age_ms, max_http_connection_duration_ms, url);
+                conn->opened = false;
+                conn->connection_open_time = 0;
+                ff_format_io_close(conn->s, &conn->out);
+            }
+        }
+        
         if (need_new_connection && conn->opened) {
             conn->opened = false;
+            conn->connection_open_time = 0;
             ff_format_io_close(conn->s, &conn->out);
         }
         pthread_mutex_unlock(&conn->open_mutex);
@@ -701,6 +737,7 @@ static int open_request(AVFormatContext *ctx, char *url, AVDictionary **options)
     if (ret >= 0) {
         ret = conn->nr;
         conn->opened = true;
+        conn->connection_open_time = US_TO_MS(av_gettime());
     }
     pthread_mutex_unlock(&conn->open_mutex);
     return ret;

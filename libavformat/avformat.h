@@ -3100,6 +3100,14 @@ AVRational av_stream_get_codec_timebase(const AVStream *st);
 #endif
 
 /**
+ * Change the maximum time a HTTP connection may be reused.
+ * Useful to trigger reconnects before auth nonce expires.
+ *
+ * @param duration_ms     new duration to use, in ms
+ */
+void av_set_max_http_connection_duration(int64_t duration_ms);
+
+/**
  * Change target latency time
  *
  * @param latency     new target latency time to set to
