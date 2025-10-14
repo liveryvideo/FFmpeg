@@ -575,7 +575,7 @@ static void write_hls_media_playlist(OutputStream *os, AVFormatContext *s,
     snprintf(temp_filename_hls, sizeof(temp_filename_hls), use_rename ? "%s.tmp" : "%s", filename_hls);
 
     set_http_options(&http_opts, c);
-    conn_nr = pool_io_open(s, temp_filename_hls, &http_opts, c->http_persistent, 0, 0, 0);
+    conn_nr = pool_io_open(s, temp_filename_hls, &http_opts, c->http_persistent, 0, 0);
 
     av_dict_free(&http_opts);
     if (conn_nr < 0) {
@@ -1252,7 +1252,7 @@ static int write_manifest(AVFormatContext *s, int final)
 
     snprintf(temp_filename, sizeof(temp_filename), use_rename ? "%s.tmp" : "%s", s->url);
     set_http_options(&opts, c);
-    mpd_conn_nr = pool_io_open(s, temp_filename, &opts, c->http_persistent, 0, 0, 0);
+    mpd_conn_nr = pool_io_open(s, temp_filename, &opts, c->http_persistent, 0, 0);
 
     av_dict_free(&opts);
     if (mpd_conn_nr < 0) {
@@ -1400,7 +1400,7 @@ static int write_manifest(AVFormatContext *s, int final)
         snprintf(temp_filename, sizeof(temp_filename), use_rename ? "%s.tmp" : "%s", filename_hls);
 
         set_http_options(&opts, c);
-        m3u8_conn_nr = pool_io_open(s, temp_filename, &opts, c->http_persistent, 0, 0, 0);
+        m3u8_conn_nr = pool_io_open(s, temp_filename, &opts, c->http_persistent, 0, 0);
         av_dict_free(&opts);
         if (m3u8_conn_nr < 0) {
             return handle_io_open_error(s, m3u8_conn_nr, temp_filename);
@@ -1749,7 +1749,7 @@ static int dash_init(AVFormatContext *s)
         if (!c->single_file) {
             if ((ret = avio_open_dyn_buf(&ctx->pb)) < 0)
                 return ret;
-            ret = pool_io_open(s, filename, &opts, c->http_persistent, 1, c->http_retry, 0);
+            ret = pool_io_open(s, filename, &opts, c->http_persistent, 1, 0);
         } else {
             ctx->url = av_strdup(filename);
             ret = avio_open2(&ctx->pb, filename, AVIO_FLAG_WRITE, NULL, &opts);
@@ -2502,7 +2502,7 @@ static int dash_write_packet(AVFormatContext *s, AVPacket *pkt)
         snprintf(os->temp_path, sizeof(os->temp_path),
                  use_rename ? "%s.tmp" : "%s", os->full_path);
         set_http_options(&opts, c);
-        ret = pool_io_open(s, os->temp_path, &opts, c->http_persistent, 0, c->http_retry, 0);
+        ret = pool_io_open(s, os->temp_path, &opts, c->http_persistent, 0, 0);
         av_dict_free(&opts);
         os->conn_nr = ret;
         if (ret < 0) {

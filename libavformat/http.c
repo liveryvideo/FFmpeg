@@ -535,10 +535,10 @@ int ff_http_do_new_request2(URLContext *h, const char *uri, AVDictionary **opts)
          * since we already have it. */
         if (s->early_auth_retry && s->chunked_post) {
             char footer[] = "0\r\n\r\n";
-            av_log(h, AV_LOG_INFO, "[AUTH_RETRY] Sending chunked trailer to end old request before starting new one\n");
+            av_log(h, AV_LOG_INFO, "Sending chunked trailer to end old request before starting new one\n");
             ret = ffurl_write(s->hd, footer, sizeof(footer) - 1);
             if (ret < 0) {
-                av_log(h, AV_LOG_WARNING, "[AUTH_RETRY] Failed to send chunked trailer: %s\n", av_err2str(ret));
+                av_log(h, AV_LOG_WARNING, "Failed to send chunked trailer: %s\n", av_err2str(ret));
                 return ret;
             }
             s->end_chunked_post = 1;
@@ -1923,7 +1923,7 @@ static int http_check_early_response(URLContext *h)
     int read_ret;
     
     if (fd < 0) {
-        return 0; /* Can't check without file descriptor */
+        return 0;
     }
     
     /* Use MSG_PEEK to check if data is available without consuming it */
@@ -1984,7 +1984,6 @@ static int http_check_early_response(URLContext *h)
     }
     
     /* Couldn't parse headers yet - data incomplete */
-    av_log(h, AV_LOG_DEBUG, "Early response data incomplete, will continue writing chunks\n");
     return 0;
 }
 

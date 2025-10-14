@@ -429,8 +429,6 @@ char *ff_http_auth_create_response(HTTPAuthState *state, const char *auth,
     if (!auth || !strchr(auth, ':'))
         return NULL;
 
-    av_log(NULL, AV_LOG_INFO, "XY>>>>>>> httpauth.c: %s, auth: %s, nonce: %s, stale: %d\n", path, auth, state->digest_params.nonce, state->stale);
-
     if (state->auth_type == HTTP_AUTH_BASIC) {
         int auth_b64_len, len;
         char *ptr, *decoded_auth = ff_urldecode(auth, 0);
