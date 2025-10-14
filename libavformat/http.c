@@ -530,9 +530,24 @@ int ff_http_do_new_request2(URLContext *h, const char *uri, AVDictionary **opts)
     }
 
     if (!s->end_chunked_post) {
-        ret = http_shutdown(h, h->flags);
-        if (ret < 0)
-            return ret;
+        /* If early_auth_retry is set, we detected 401 during chunked POST and already consumed the response.
+         * We need to send the chunked trailer to properly end the old request, but skip reading the response
+         * since we already have it. */
+        if (s->early_auth_retry && s->chunked_post) {
+            char footer[] = "0\r\n\r\n";
+            av_log(h, AV_LOG_INFO, "[AUTH_RETRY] Sending chunked trailer to end old request before starting new one\n");
+            ret = ffurl_write(s->hd, footer, sizeof(footer) - 1);
+            if (ret < 0) {
+                av_log(h, AV_LOG_WARNING, "[AUTH_RETRY] Failed to send chunked trailer: %s\n", av_err2str(ret));
+                return ret;
+            }
+            s->end_chunked_post = 1;
+            s->early_auth_retry = 0;
+        } else {
+            ret = http_shutdown(h, h->flags);
+            if (ret < 0)
+                return ret;
+        }
     }
 
     if (s->willclose)
@@ -1621,111 +1636,11 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
     s->compressed       = 0;
 #endif
     
-    if (post && !s->post_data) {
-        /* For chunked POST with digest auth, check if server sent an early response.
-         * Some servers send 401 immediately when nonce is stale, before waiting for
-         * the POST body. Detecting this early prevents us from waiting until the full
-         * body has been send before retrying, which is important for low latency scenarios.
-         * 
-         * We do a non-blocking read to check if the server already sent a response
-         * (e.g., 401 for stale nonce). If nothing is available, we proceed normally.
-         * 
-         * This includes both:
-         * - Expect: 100-continue requests (initial auth) where server may reject immediately
-         * - Regular chunked POST with stale nonce where server rejects before consuming body
-         */
-        if (s->chunked_post) {            
-            int fd = ffurl_get_file_handle(s->hd);
-            int read_ret = AVERROR(EAGAIN);
-            int64_t start_time = av_gettime_relative();
-            const int64_t timeout_us = 100000; // 100ms timeout
-            const int64_t poll_interval_us = 1000; // 1ms between checks
-            int poll_count = 0;
-            
-            if (fd >= 0) {
-                /* Poll the socket to see if data becomes available */
-                while (av_gettime_relative() - start_time < timeout_us) {
-                    char peek_buf[1];
-                    int peek_ret = recv(fd, peek_buf, 1, MSG_PEEK | MSG_DONTWAIT);
-                    poll_count++;
-                    
-                    if (peek_ret > 0) {
-                        /* Data is available! Read it properly */
-                        int64_t elapsed = av_gettime_relative() - start_time;
-                        av_log(h, AV_LOG_INFO, "Socket peek detected data after %lld us (%d polls), reading response\n",
-                               (long long)elapsed, poll_count);
-                        read_ret = ffurl_read(s->hd, s->buffer, BUFFER_SIZE);
-                        break;
-                    } else if (peek_ret == 0) {
-                        av_log(h, AV_LOG_WARNING, "Socket peek returned 0 (connection closed)\n");
-                        read_ret = AVERROR_EOF;
-                        break;
-                    } else {
-                        /* No data yet (EAGAIN/EWOULDBLOCK) or error */
-                        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                            av_log(h, AV_LOG_WARNING, "Socket peek error: %s\n", strerror(errno));
-                            break;
-                        }
-                        /* Sleep for a short interval before next poll */
-                        av_usleep(poll_interval_us);
-                    }
-                }
-            } else {
-                av_log(h, AV_LOG_WARNING, "Could not get file handle for socket peek, fd=%d\n", fd);
-            }
-            
-            if (read_ret > 0) {
-                /* Got data - parse it as HTTP headers */
-                s->buf_ptr = s->buffer;
-                s->buf_end = s->buffer + read_ret;
-                av_log(h, AV_LOG_INFO, "Early response data received (%d bytes), parsing headers\n", read_ret);
-            
-                err = http_read_header(h);
-                
-                if (err >= 0 || (err < 0 && s->http_code != 0)) {
-                    av_log(h, AV_LOG_INFO, "Received early response: HTTP %d\n", s->http_code);
-                    
-                    if (s->http_code == 401) {
-                        int64_t req_time_ms = US_TO_MS(av_gettime()) - s->start_time_ms;
-                        av_log(h, AV_LOG_INFO, "Received early 401 on chunked POST - nonce is stale%s\n",
-                               s->willclose ? ", server will close connection" : ", keeping connection open for retry");
-                        av_log(h, AV_LOG_INFO, "HTTP response: %d, duration: %"PRId64", url: %s \n", s->http_code, req_time_ms, s->location);
-                        /* The new nonce from the 401 response is already stored in s->auth_state.
-                         * Only keep connection open if server didn't send Connection: close */
-                        if (!s->willclose) {
-                            s->buf_ptr = s->buffer;
-                            s->buf_end = s->buffer;
-                            s->early_auth_retry = 1;
-                        }
-                        goto done;
-                    }
-                    
-                    /* If we got any other error or non-2xx response, fail */
-                    if (err < 0 || (s->http_code < 200 || s->http_code >= 300)) {
-                        av_log(h, AV_LOG_WARNING, "Unexpected early response %d on chunked POST: %s\n", 
-                               s->http_code, av_err2str(err));
-                        if (err >= 0)
-                            err = AVERROR(EIO);
-                        goto done;
-                    }
-                    
-                    av_log(h, AV_LOG_INFO, "Server accepted chunked POST headers (status %d), skipping body\n", s->http_code);
-                    goto done;
-                } else {
-                    av_log(h, AV_LOG_DEBUG, "Buffered data incomplete, will read response after sending body\n");
-                }
-            } else if (read_ret == AVERROR(EAGAIN)) {
-                av_log(h, AV_LOG_INFO, "No immediate early response available (EAGAIN), proceeding with chunked POST body\n");
-            } else {
-                av_log(h, AV_LOG_WARNING, "Error during early response check: %s, proceeding with chunked POST body\n", 
-                       av_err2str(read_ret));
-            }
-        }
-    }
-
     /* For chunked POST, skip reading the response header here.
      * The server won't send the response until after receiving the body.
-     * The response will be read later when closing the connection. */
+     * Early 401 responses (e.g., stale nonce) will be detected during chunk
+     * writes by http_write() which performs non-blocking checks after each chunk.
+     * The response will be read when closing the connection. */
     if (post && s->chunked_post) {
         goto done;
     }
@@ -1993,6 +1908,86 @@ static int store_icy(URLContext *h, int size)
     return FFMIN(size, remaining);
 }
 
+/**
+ * Check for early HTTP response (e.g., 401) in a non-blocking way.
+ * This is used during chunked POST to detect authentication failures
+ * without blocking or waiting for the full body to be sent.
+ * 
+ * @return 1 if early response detected and handled, 0 if no data available,
+ *         negative on error
+ */
+static int http_check_early_response(URLContext *h)
+{
+    HTTPContext *s = h->priv_data;
+    int fd = ffurl_get_file_handle(s->hd);
+    int read_ret;
+    
+    if (fd < 0) {
+        return 0; /* Can't check without file descriptor */
+    }
+    
+    /* Use MSG_PEEK to check if data is available without consuming it */
+    char peek_buf[1];
+    int peek_ret = recv(fd, peek_buf, 1, MSG_PEEK | MSG_DONTWAIT);
+    
+    if (peek_ret <= 0) {
+        /* No data available (EAGAIN/EWOULDBLOCK) or connection closed */
+        if (peek_ret == 0) {
+            av_log(h, AV_LOG_WARNING, "Connection closed during chunk write\n");
+            return AVERROR_EOF;
+        }
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            av_log(h, AV_LOG_WARNING, "Socket peek error during chunk write: %s\n", strerror(errno));
+            return AVERROR(errno);
+        }
+        return 0; /* No data available, which is expected */
+    }
+    
+    /* Data is available - read it properly */
+    av_log(h, AV_LOG_INFO, "Early response detected during chunk write, reading headers\n");
+    read_ret = ffurl_read(s->hd, s->buffer, BUFFER_SIZE);
+    
+    if (read_ret <= 0) {
+        av_log(h, AV_LOG_WARNING, "Failed to read early response: %s\n", av_err2str(read_ret));
+        return read_ret < 0 ? read_ret : AVERROR_EOF;
+    }
+    
+    /* Parse the response headers */
+    s->buf_ptr = s->buffer;
+    s->buf_end = s->buffer + read_ret;
+    
+    int err = http_read_header(h);
+    
+    if (err >= 0 || (err < 0 && s->http_code != 0)) {
+        av_log(h, AV_LOG_INFO, "Received early response during chunk write: HTTP %d\n", s->http_code);
+        
+        if (s->http_code == 401) {
+            int64_t req_time_ms = US_TO_MS(av_gettime()) - s->start_time_ms;
+            av_log(h, AV_LOG_INFO, "Received 401 during chunked POST - nonce is stale%s\n",
+                   s->willclose ? ", server will close connection" : ", keeping connection open for retry");
+            av_log(h, AV_LOG_INFO, "HTTP response: %d, duration: %"PRId64", url: %s\n", 
+                   s->http_code, req_time_ms, s->location);
+            
+            /* Only keep connection open if server didn't send Connection: close */
+            if (!s->willclose) {
+                s->buf_ptr = s->buffer;
+                s->buf_end = s->buffer;
+                s->early_auth_retry = 1;
+            }
+            
+            return 1; /* Early 401 detected */
+        }
+        
+        /* Got some other response - this is unexpected during chunk write */
+        av_log(h, AV_LOG_WARNING, "Unexpected early response %d during chunked POST\n", s->http_code);
+        return AVERROR(EIO);
+    }
+    
+    /* Couldn't parse headers yet - data incomplete */
+    av_log(h, AV_LOG_DEBUG, "Early response data incomplete, will continue writing chunks\n");
+    return 0;
+}
+
 static int http_read(URLContext *h, uint8_t *buf, int size)
 {
     HTTPContext *s = h->priv_data;
@@ -2035,6 +2030,22 @@ static int http_write(URLContext *h, const uint8_t *buf, int size)
             (ret = ffurl_write(s->hd, buf, size)) < 0          ||
             (ret = ffurl_write(s->hd, crlf, sizeof(crlf) - 1)) < 0)
             return ret;
+        
+        /* After writing each chunk, check if server sent an early response (e.g., 401).
+         * This allows us to detect stale nonces quickly without blocking upfront or
+         * waiting for the full body to be sent. The check is non-blocking and will
+         * only read if data is available on the socket. */
+        ret = http_check_early_response(h);
+        if (ret > 0) {
+            /* Early 401 response detected - return authentication error.
+             * The early_auth_retry flag is set by http_check_early_response(),
+             * signaling that the connection should be kept open for retry. */
+            return AVERROR_HTTP_UNAUTHORIZED;
+        } else if (ret < 0) {
+            /* Other error during early response check */
+            return ret;
+        }
+        /* ret == 0 means no early response available, continue normally */
     }
     return size;
 }

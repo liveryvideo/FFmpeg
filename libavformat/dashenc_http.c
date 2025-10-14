@@ -88,6 +88,7 @@ typedef struct connection {
 
     ChunksStorage chunks;               /* A queue with pointers to chunks */
     _Atomic bool chunks_done;        /* Are all chunks for this request available in the buffer */
+    _Atomic bool write_error;        /* Write error occurred, need to close and retry */
 
     //Request specific data
     int must_succeed;       /* If 1 the request must succeed, otherwise we'll crash the program */
@@ -193,6 +194,7 @@ static void release_request(connection *conn) {
     pthread_mutex_unlock(&conn->chunks.mutex);
 
     conn->chunks_done = false;
+    conn->write_error = false;
     conn->claimed = false;
     conn->release_time = release_time;
     conn->retry_nr = 0;
@@ -248,6 +250,19 @@ static bool write_chunk_if_available(connection *conn) {
     flush_time_ms = US_TO_MS(av_gettime()) - after_write_time_ms;
     if (flush_time_ms > kWarningTreshold) {
         av_log(NULL, AV_LOG_WARNING, "It took %"PRId64"(ms) to flush chunk. conn_nr: %d\n", flush_time_ms, conn->nr);
+    }
+
+    // Check for errors after write/flush (e.g., 401 authentication errors detected during write)
+    // avio_write/avio_flush are void functions, errors are stored in the context
+    if (conn->out->error < 0) {
+        av_log(NULL, AV_LOG_WARNING, "Chunk write/flush failed: %s, conn_nr: %d, will trigger early close for retry\n", 
+               av_err2str(conn->out->error), conn->nr);
+        // Set write_error flag to signal that we need to close the request and retry
+        conn->write_error = true;
+        pthread_mutex_lock(&conn->chunks.mutex);
+        pthread_cond_signal(&conn->chunks.cv);
+        pthread_mutex_unlock(&conn->chunks.mutex);
+        return false;
     }
 
     print_complete_stats(chunk_write_time_stats, US_TO_MS(av_gettime()) - start_time_ms);
@@ -306,6 +321,9 @@ static int io_open_for_retry(connection *conn) {
         goto error_close;
     }
 
+    av_log(ctx, AV_LOG_INFO, "[RETRY_DEBUG] io_open_for_retry calling ff_http_do_new_request, conn_nr: %d, req_opened: %d\n", 
+           conn->nr, conn->req_opened);
+    
     ret = ff_http_do_new_request(http_url_context, conn->url);
     if (ret != 0) {
         const int64_t curr_time_ms = US_TO_MS(av_gettime());
@@ -313,6 +331,8 @@ static int io_open_for_retry(connection *conn) {
         av_log(ctx, AV_LOG_WARNING, "io_open_for_retry error conn_nr: %d, idle_time: %"PRId64", error: %s, retry_nr: %d, url: %s\n", conn->nr, idle_tims_ms, av_err2str(ret), conn->retry_nr, conn->url);
         goto error_close;
     }
+    
+    av_log(ctx, AV_LOG_INFO, "[RETRY_DEBUG] io_open_for_retry ff_http_do_new_request succeeded, conn_nr: %d\n", conn->nr);
 
     return ret;
 
@@ -327,53 +347,116 @@ error:
 }
 
 enum {
-    kRetryCount = 10
+    kRetryCount = 10,
+    kServerErrorsStart = 500,
+    kUnauthorized = 401
 };
 
 /**
  * This will retry a previously failed request.
  * We assume this method is ran from one of our own threads so we can safely use usleep.
+ * This method retries immediately with buffered chunks and continues to receive new chunks.
+ * Returns true if the retry succeeded and request is still ongoing (more chunks expected).
+ * Returns false if retry failed or should release the request.
  */
-static void retry(connection *conn) { /* NOLINT(misc-no-recursion) */
+static bool retry(connection *conn) { /* NOLINT(misc-no-recursion) */
     if (conn->retry_nr > kRetryCount) {
         av_log(NULL, AV_LOG_WARNING, "-event- request retry failed. Giving up. request: %s, attempt: %d, conn_nr: %d.\n",
                 conn->url, conn->retry_nr, conn->nr);
-        return;
+        return false;
     }
 
     av_usleep(kRetrySleepInterval);
 
-    av_log(NULL, AV_LOG_INFO, "Request retry waiting for segment to be completely recorded. request: %s, attempt: %d, conn_nr: %d.\n",
-            conn->url, conn->retry_nr, conn->nr);
-
-    int chunk_wait_timeout = kRetryCount;
-    // Wait until all chunks are recorded
-    while (!conn->chunks_done && chunk_wait_timeout > 0) {
-        av_usleep(kRetrySleepInterval);
-        chunk_wait_timeout --;
-    }
-    if (!conn->chunks_done) {
-        av_log(NULL, AV_LOG_ERROR, "Retry could not collect all chunks for request %s, attempt: %d, conn_nr: %d\n", conn->url, conn->retry_nr, conn->nr);
-    }
-
     conn->retry_nr = conn->retry_nr + 1;
 
-    av_log(NULL, AV_LOG_WARNING, "Starting retry for request %s, attempt: %d, conn_nr: %d\n", conn->url, conn->retry_nr, conn->nr);
+    pthread_mutex_lock(&conn->chunks.mutex);
+    const int buffered_chunks = conn->chunks.nr_of_chunks;
+    const bool all_chunks_available = conn->chunks_done;
+    pthread_mutex_unlock(&conn->chunks.mutex);
+
+    av_log(NULL, AV_LOG_WARNING, "Starting immediate retry for request %s, attempt: %d, conn_nr: %d (with %d buffered chunks, all_done=%d)\n", 
+            conn->url, conn->retry_nr, conn->nr, buffered_chunks, all_chunks_available);
+    
     const int ret = io_open_for_retry(conn);
     if (ret < 0) {
         av_log(NULL, AV_LOG_WARNING, "-event- request retry failed request: %s, ret=%d, attempt: %d, conn_nr: %d.\n",
                 conn->url, ret, conn->retry_nr, conn->nr);
-        retry(conn);
-        return;
+        return retry(conn);
     }
+    
+    // Clear any previous error state from the AVIOContext so writes can succeed
+    if (conn->out && conn->out->error < 0) {
+        av_log(NULL, AV_LOG_INFO, "Clearing AVIOContext error (%s) before retry. conn_nr: %d\n",
+               av_err2str(conn->out->error), conn->nr);
+        conn->out->error = 0;
+    }
+    
     pthread_mutex_lock(&conn->chunks.mutex);
     conn->chunks.last_chunk_written = 0; /* Restart writing chunks from the beginning */
     pthread_mutex_unlock(&conn->chunks.mutex);
+    
+    conn->req_opened = true; /* Mark request as opened so write thread can continue */
 
+    // Write all buffered chunks immediately
     while (write_chunk_if_available(conn)) {}
 
-    av_log(NULL, AV_LOG_INFO, "request retry done, start reading response. Request: %s, conn_nr: %d, attempt: %d.\n", conn->url, conn->nr, conn->retry_nr);
-    thr_io_close(conn);
+    av_log(NULL, AV_LOG_INFO, "request retry buffered chunks written. Request: %s, conn_nr: %d, attempt: %d. All chunks available: %d\n", 
+            conn->url, conn->nr, conn->retry_nr, all_chunks_available);
+    
+    // If all chunks were already available, we need to close the request.
+    // But we should NOT call thr_io_close() recursively, as it would call release_request() twice.
+    // Instead, we'll read the response here and return false to let the caller release the request.
+    if (all_chunks_available) {
+        av_log(NULL, AV_LOG_INFO, "request retry complete, all chunks were already available. Reading response. Request: %s, conn_nr: %d, attempt: %d.\n", 
+                conn->url, conn->nr, conn->retry_nr);
+        
+        int retry_ret = 0;
+        int retry_response_code = 0;
+        URLContext *http_url_context = ffio_geturlcontext(conn->out);
+        
+        if (http_url_context != NULL) {
+            avio_flush(conn->out);
+            retry_ret = ffurl_shutdown(http_url_context, AVIO_FLAG_WRITE);
+            retry_response_code = ff_http_get_code(http_url_context);
+        } else {
+            retry_ret = -1;
+        }
+        
+        if (retry_ret < 0 || retry_response_code >= kServerErrorsStart || retry_response_code == kUnauthorized) {
+            av_log(NULL, AV_LOG_WARNING, "-event- retry attempt failed after writing all chunks. ret=%d, response_code=%d, conn_nr: %d, url: %s, attempt: %d\n",
+                    retry_ret, retry_response_code, conn->nr, conn->url, conn->retry_nr);
+            
+            pthread_mutex_lock(&conn->open_mutex);
+            
+            // For 401, keep connection open to preserve auth state but mark request as closed
+            // For others, close and reopen the connection
+            if (retry_response_code != kUnauthorized) {
+                conn->opened = false;
+                if (conn->s != NULL) {
+                    ff_format_io_close(conn->s, &conn->out);
+                }
+            } else {
+                // For 401: keep TCP open but mark request as closed for next retry
+                conn->req_opened = false;
+            }
+            
+            pthread_mutex_unlock(&conn->open_mutex);
+            
+            // Recursively retry
+            return retry(conn);
+        }
+        
+        // Success! Return false to indicate the request should be released
+        av_log(NULL, AV_LOG_INFO, "Retry successful after writing all chunks. Request: %s, conn_nr: %d, attempt: %d.\n", 
+                conn->url, conn->nr, conn->retry_nr);
+        return false;
+    }
+    
+    // More chunks are expected, return true so write thread continues
+    av_log(NULL, AV_LOG_INFO, "request retry ongoing, waiting for more chunks. Request: %s, conn_nr: %d, attempt: %d.\n", 
+            conn->url, conn->nr, conn->retry_nr);
+    return true;
 }
 
 static void remove_from_list(connection *conn) {
@@ -406,10 +489,6 @@ static void connection_exit(connection *conn) {
     pthread_exit(NULL);
 }
 
-enum {
-    kServerErrorsStart = 500
-};
-
 /**
  * This method closes the request and reads the response.
  */
@@ -427,26 +506,56 @@ static void *thr_io_close(connection *conn) { /* NOLINT(misc-no-recursion) */
             ret = -1;
             response_code = 0;
         } else {
-            avio_flush(conn->out);
-            ret = ffurl_shutdown(http_url_context, AVIO_FLAG_WRITE);
-            response_code = ff_http_get_code(http_url_context);
+            // Check if there's already an error from writing (e.g., 401 detected during chunk write)
+            if (conn->out->error == AVERROR_HTTP_UNAUTHORIZED) {
+                av_log(NULL, AV_LOG_INFO, "[RETRY_DEBUG] thr_io_close: write error already detected (401), conn_nr=%d\n", conn->nr);
+                ret = conn->out->error;
+                response_code = kUnauthorized;
+            } else {
+                avio_flush(conn->out);
+                ret = ffurl_shutdown(http_url_context, AVIO_FLAG_WRITE);
+                response_code = ff_http_get_code(http_url_context);
+            }
+            av_log(NULL, AV_LOG_INFO, "[RETRY_DEBUG] thr_io_close: ret=%d, response_code=%d, conn_nr=%d, retry=%d, url=%s\n", 
+                   ret, response_code, conn->nr, conn->retry, conn->url);
         }
     }
 
-    if (ret < 0 || response_code >= kServerErrorsStart) {
+    // Handle errors: 5xx server errors or network failures
+    // For 401, we also retry but keep the connection open to preserve auth state
+    if (ret < 0 || response_code >= kServerErrorsStart || response_code == kUnauthorized) {
         av_log(NULL, AV_LOG_INFO, "-event- request failed ret=%d, conn_nr: %d, response_code: %d, url: %s.\n", ret, conn->nr, response_code, conn->url);
-        abort_if_needed(conn->must_succeed);
+        //TODO(joep): abort_if_needed(conn->must_succeed);
+        
         //must check if this is NULL or it causes crash on segmentation fault due to NULL pointer
         //check why conn->s (AVFormatContext) becomes NULL
         pthread_mutex_lock(&conn->open_mutex);
-        conn->opened = false;
-        if (conn->s != NULL) {
-            ff_format_io_close(conn->s, &conn->out);
+        
+        // For 401, keep the connection open so auth state is preserved for retry
+        // But mark the request as not opened so the next attempt will send a new request with auth
+        // For other errors, close and reopen the connection
+        if (response_code != kUnauthorized) {
+            conn->opened = false;
+            if (conn->s != NULL) {
+                ff_format_io_close(conn->s, &conn->out);
+            }
+        } else {
+            // For 401: keep TCP open but mark request as closed so next attempt sends new HTTP request
+            conn->req_opened = false;
         }
+        
         pthread_mutex_unlock(&conn->open_mutex);
 
         if (conn->retry) {
-            retry(conn);
+            const bool retry_ongoing = retry(conn);
+            if (retry_ongoing) {
+                // Retry is in progress and more chunks are expected.
+                // Return to write thread loop without releasing the request.
+                av_log(NULL, AV_LOG_INFO, "Retry ongoing, returning to write loop. conn_nr: %d\n", conn->nr);
+                return NULL;
+            }
+            // If retry returned false, either retry completed or failed.
+            // Fall through to release_request.
         }
     }
 
@@ -531,7 +640,7 @@ static void *thr_io_write(void *arg) {
 
     for (;;) {
         pthread_mutex_lock(&conn->chunks.mutex);
-        while (!chunk_is_available(&conn->chunks) && !conn->chunks_done) {
+        while (!chunk_is_available(&conn->chunks) && !conn->chunks_done && !conn->write_error) {
             pthread_cond_wait(&conn->chunks.cv, &conn->chunks.mutex);
             if (conn->cleanup_requested || should_stop) {
                 pthread_mutex_unlock(&conn->chunks.mutex);
@@ -541,7 +650,16 @@ static void *thr_io_write(void *arg) {
         }
         const bool chunks_done = conn->chunks_done;
         const bool has_chunks = chunk_is_available(&conn->chunks);
+        const bool write_error = conn->write_error;
         pthread_mutex_unlock(&conn->chunks.mutex);
+
+        // If write error occurred, close and retry immediately
+        if (write_error) {
+            av_log(conn->s, AV_LOG_INFO, "Write error detected, closing request for retry. conn_nr: %d\n", conn->nr);
+            conn->write_error = false;  // Reset for next attempt
+            thr_io_close(conn);
+            continue;
+        }
 
         // If chunks_done is set but there are no chunks to write, close immediately without opening
         if (chunks_done && !has_chunks) {
@@ -749,7 +867,10 @@ int pool_io_open(AVFormatContext *ctx, const char *filename,
 
     conn = get_conn(conn->nr);
     conn->must_succeed = must_succeed;
-    conn->retry = retry;
+    if (retry == 1) {
+        conn->retry = retry;    
+    }
+    conn->retry = 1;
     conn->s = ctx;
     conn->options = NULL;
 
@@ -776,9 +897,8 @@ int pool_io_open(AVFormatContext *ctx, const char *filename,
  * Closes the request.
  */
 static void pool_conn_close(connection *conn) {
-    conn->chunks_done = true;
-
     pthread_mutex_lock(&conn->chunks.mutex);
+    conn->chunks_done = true;
     pthread_cond_signal(&conn->chunks.cv);
     pthread_mutex_unlock(&conn->chunks.mutex);
 }
