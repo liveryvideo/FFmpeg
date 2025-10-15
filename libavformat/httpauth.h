@@ -71,8 +71,6 @@ typedef struct HTTPAuthState {
      * Auth ok, but needs to be resent with a new nonce.
      */
     int stale;
-
-    int64_t used_nonce_birth_time;
 } HTTPAuthState;
 
 void ff_http_auth_handle_header(HTTPAuthState *state, const char *key,

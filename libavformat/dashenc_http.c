@@ -8,7 +8,7 @@
  */
 #include "dashenc_http.h"
 
-#include <errno.h>
+#include <errno.h> /* NOLINT(misc-include-cleaner) */ /* Used for ENOMEM in AVERROR() macro */
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -88,16 +88,17 @@ typedef struct connection {
 
     ChunksStorage chunks;               /* A queue with pointers to chunks */
     _Atomic bool chunks_done;        /* Are all chunks for this request available in the buffer */
+    _Atomic bool write_error;        /* Write error occurred, need to close and retry */
 
     //Request specific data
     int must_succeed;       /* If 1 the request must succeed, otherwise we'll crash the program */
-    int retry;              /* If 1 the request can be retried */
     int retry_nr;           /* Current retry number, used to limit the nr of retries */
     char *url;              /* url of the current request */
     AVDictionary *options;
     int http_persistent;
     _Atomic bool cleanup_requested;  /* This conn should be deleted, can be caused by too many idle connections */
     buffer_data *mem;       /* Optional buffer to hold file content that will be written */
+    int64_t request_start_time;     /* Time when the request was first opened (in ms), used for logging request duration */
 } connection;
 
 /* If there will be to may connections, this should be replaced with hashtable */
@@ -136,7 +137,7 @@ static int get_connection_number(void) {
                 pthread_mutex_unlock(&connection_numbers_bitmap_mutex);
 
                 const int connection_number = (i << sizeof(ConnectionNumbersBitmapType)) + bit;
-                av_log(NULL, AV_LOG_INFO, "Claim connection id %d\n", connection_number);
+                av_log(NULL, AV_LOG_INFO, "[dashenc_http] Claim connection id %d\n", connection_number);
                 return connection_number;
             }
         }
@@ -148,11 +149,11 @@ static int get_connection_number(void) {
 
 static void free_connection_number(const int connection_number) {
     if (connection_number < 0 || connection_number > (kConnectionNumbersBitmapSize << sizeof(ConnectionNumbersBitmapType))) {
-        av_log(NULL, AV_LOG_ERROR, "Trying to release invalid connection number: %d", connection_number);
+        av_log(NULL, AV_LOG_ERROR, "[dashenc_http] Trying to release invalid connection number: %d", connection_number);
         return;
     }
 
-    av_log(NULL, AV_LOG_INFO, "Release connection id %d\n", connection_number);
+    av_log(NULL, AV_LOG_INFO, "[dashenc_http] Release connection id %d\n", connection_number);
     pthread_mutex_lock(&connection_numbers_bitmap_mutex);
     const int index = connection_number >> sizeof(ConnectionNumbersBitmapType);
     const int bit = connection_number - (index << sizeof(ConnectionNumbersBitmapType));
@@ -173,7 +174,8 @@ static void *thr_io_close(connection *conn);
 /* This method expects the lock to be already done.*/
 static void release_request(connection *conn) {
     const int64_t release_time = US_TO_MS(av_gettime());
-    av_log(NULL, AV_LOG_INFO, "release_request conn_nr: %d.\n", conn->nr);
+    av_log(NULL, AV_LOG_INFO, "[dashenc_http] release_request conn_nr: %d, opened: %d (now available for reuse)\n", 
+           conn->nr, (int)conn->opened);
 
     if (conn->claimed) {
         free(conn->url);
@@ -192,15 +194,17 @@ static void release_request(connection *conn) {
     pthread_mutex_unlock(&conn->chunks.mutex);
 
     conn->chunks_done = false;
+    conn->write_error = false;
     conn->claimed = false;
     conn->release_time = release_time;
     conn->retry_nr = 0;
     conn->open_error = false;
+    conn->request_start_time = 0;
 }
 
 static void abort_if_needed(const int mustSucceed) {
     if (mustSucceed) {
-        av_log(NULL, AV_LOG_ERROR, "Abort because request needs to succeed and it did not.\n");
+        av_log(NULL, AV_LOG_ERROR, "[dashenc_http] Abort because request needs to succeed and it did not.\n");
         abort();
     }
 }
@@ -213,7 +217,7 @@ enum {
     kWarningTreshold = 100
 };
 
-/* returns true if all the chunks are written */
+/* returns true if a chunk was written */
 static bool write_chunk_if_available(connection *conn) {
     int64_t start_time_ms = 0;
     int64_t write_time_ms = 0;
@@ -221,7 +225,7 @@ static bool write_chunk_if_available(connection *conn) {
     int64_t after_write_time_ms = 0;
 
     if (!conn->out) {
-        av_log(NULL, AV_LOG_WARNING, "Connection not open so skip avio_write. Conn_nr: %d, url: %s\n", conn->nr , conn->url);
+        av_log(NULL, AV_LOG_WARNING, "[dashenc_http] Connection not open so skip avio_write. Conn_nr: %d, url: %s\n", conn->nr , conn->url);
         return false;
     }
 
@@ -240,13 +244,26 @@ static bool write_chunk_if_available(connection *conn) {
     after_write_time_ms = US_TO_MS(av_gettime());
     write_time_ms = after_write_time_ms - start_time_ms;
     if (write_time_ms > kWarningTreshold) {
-        av_log(NULL, AV_LOG_WARNING, "It took %"PRId64"(ms) to write chunk. conn_nr: %d\n", write_time_ms, conn->nr);
+        av_log(NULL, AV_LOG_WARNING, "[dashenc_http] It took %"PRId64"(ms) to write chunk. conn_nr: %d\n", write_time_ms, conn->nr);
     }
 
     avio_flush(conn->out);
     flush_time_ms = US_TO_MS(av_gettime()) - after_write_time_ms;
     if (flush_time_ms > kWarningTreshold) {
-        av_log(NULL, AV_LOG_WARNING, "It took %"PRId64"(ms) to flush chunk. conn_nr: %d\n", flush_time_ms, conn->nr);
+        av_log(NULL, AV_LOG_WARNING, "[dashenc_http] It took %"PRId64"(ms) to flush chunk. conn_nr: %d\n", flush_time_ms, conn->nr);
+    }
+
+    // Check for errors after write/flush (e.g., 401 authentication errors detected during write)
+    // avio_write/avio_flush are void functions, errors are stored in the context
+    if (conn->out->error < 0) {
+        av_log(NULL, AV_LOG_WARNING, "[dashenc_http] Chunk write/flush failed: %s, conn_nr: %d, will trigger early close for retry\n", 
+               av_err2str(conn->out->error), conn->nr);
+        // Set write_error flag to signal that we need to close the request and retry
+        conn->write_error = true;
+        pthread_mutex_lock(&conn->chunks.mutex);
+        pthread_cond_signal(&conn->chunks.cv);
+        pthread_mutex_unlock(&conn->chunks.mutex);
+        return false;
     }
 
     print_complete_stats(chunk_write_time_stats, US_TO_MS(av_gettime()) - start_time_ms);
@@ -266,11 +283,11 @@ static connection *get_conn(int conn_nr) {
     }
     pthread_mutex_unlock(&connections_mutex);
     if (conn == NULL || conn->nr != conn_nr) {
-        av_log(NULL, AV_LOG_FATAL, "connection %d not found. Aborting...\n", conn_nr);
+        av_log(NULL, AV_LOG_FATAL, "[dashenc_http] connection %d not found. Aborting...\n", conn_nr);
         if (LIST_FIRST(&connections) != NULL) {
-            av_log(NULL, AV_LOG_FATAL, "First conn_nr: %d.\n", LIST_FIRST(&connections)->nr);
+            av_log(NULL, AV_LOG_FATAL, "[dashenc_http] First conn_nr: %d.\n", LIST_FIRST(&connections)->nr);
         } else {
-            av_log(NULL, AV_LOG_FATAL, "Connections list empty.\n");
+            av_log(NULL, AV_LOG_FATAL, "[dashenc_http] Connections list empty.\n");
         }
         abort();
     }
@@ -285,11 +302,11 @@ static int io_open_for_retry(connection *conn) {
 
     pthread_mutex_lock(&conn->open_mutex);
     if (!conn->opened) {
-        av_log(ctx, AV_LOG_INFO, "Connection for retry: %d not yet open. conn_nr: %d, url: %s\n", conn->retry_nr, conn->nr, conn->url);
+        av_log(ctx, AV_LOG_INFO, "[dashenc_http] Connection for retry: %d not yet open. conn_nr: %d, url: %s\n", conn->retry_nr, conn->nr, conn->url);
 
         ret = ctx->io_open(ctx, &(conn->out), conn->url, AVIO_FLAG_WRITE, &conn->options);
         if (ret < 0) {
-            av_log(ctx, AV_LOG_WARNING, "io_open_for_retry %d could not open url: %s\n", conn->retry_nr, conn->url);
+            av_log(ctx, AV_LOG_WARNING, "[dashenc_http] io_open_for_retry %d could not open url: %s\n", conn->retry_nr, conn->url);
             goto error;
         }
 
@@ -301,17 +318,22 @@ static int io_open_for_retry(connection *conn) {
 
     http_url_context = ffio_geturlcontext(conn->out);
     if (http_url_context == NULL) {
-        av_log(ctx, AV_LOG_WARNING, "Failed to get url context");
+        av_log(ctx, AV_LOG_WARNING, "[dashenc_http] Failed to get url context");
         goto error_close;
     }
 
+    av_log(ctx, AV_LOG_INFO, "[dashenc_http] io_open_for_retry calling ff_http_do_new_request, conn_nr: %d, req_opened: %d\n", 
+           conn->nr, conn->req_opened);
+    
     ret = ff_http_do_new_request(http_url_context, conn->url);
     if (ret != 0) {
         const int64_t curr_time_ms = US_TO_MS(av_gettime());
         const int64_t idle_tims_ms = curr_time_ms - conn->release_time;
-        av_log(ctx, AV_LOG_WARNING, "io_open_for_retry error conn_nr: %d, idle_time: %"PRId64", error: %s, retry_nr: %d, url: %s\n", conn->nr, idle_tims_ms, av_err2str(ret), conn->retry_nr, conn->url);
+        av_log(ctx, AV_LOG_WARNING, "[dashenc_http] io_open_for_retry error conn_nr: %d, idle_time: %"PRId64", error: %s, retry_nr: %d, url: %s\n", conn->nr, idle_tims_ms, av_err2str(ret), conn->retry_nr, conn->url);
         goto error_close;
     }
+    
+    av_log(ctx, AV_LOG_INFO, "[dashenc_http] io_open_for_retry ff_http_do_new_request succeeded, conn_nr: %d\n", conn->nr);
 
     return ret;
 
@@ -326,57 +348,120 @@ error:
 }
 
 enum {
-    kRetryCount = 10
+    kRetryCount = 10,
+    kServerErrorsStart = 500,
+    kUnauthorized = 401
 };
 
 /**
  * This will retry a previously failed request.
  * We assume this method is ran from one of our own threads so we can safely use usleep.
+ * This method retries immediately with buffered chunks and continues to receive new chunks.
+ * Returns true if the retry succeeded and request is still ongoing (more chunks expected).
+ * Returns false if retry failed or should release the request.
  */
-static void retry(connection *conn) { /* NOLINT(misc-no-recursion) */
+static bool retry(connection *conn) { /* NOLINT(misc-no-recursion) */
     if (conn->retry_nr > kRetryCount) {
-        av_log(NULL, AV_LOG_WARNING, "-event- request retry failed. Giving up. request: %s, attempt: %d, conn_nr: %d.\n",
+        av_log(NULL, AV_LOG_WARNING, "[dashenc_http] -event- request retry failed. Giving up. request: %s, attempt: %d, conn_nr: %d.\n",
                 conn->url, conn->retry_nr, conn->nr);
-        return;
+        return false;
     }
 
     av_usleep(kRetrySleepInterval);
 
-    av_log(NULL, AV_LOG_INFO, "Request retry waiting for segment to be completely recorded. request: %s, attempt: %d, conn_nr: %d.\n",
-            conn->url, conn->retry_nr, conn->nr);
-
-    int chunk_wait_timeout = kRetryCount;
-    // Wait until all chunks are recorded
-    while (!conn->chunks_done && chunk_wait_timeout > 0) {
-        av_usleep(kRetrySleepInterval);
-        chunk_wait_timeout --;
-    }
-    if (!conn->chunks_done) {
-        av_log(NULL, AV_LOG_ERROR, "Retry could not collect all chunks for request %s, attempt: %d, conn_nr: %d\n", conn->url, conn->retry_nr, conn->nr);
-    }
-
     conn->retry_nr = conn->retry_nr + 1;
 
-    av_log(NULL, AV_LOG_WARNING, "Starting retry for request %s, attempt: %d, conn_nr: %d\n", conn->url, conn->retry_nr, conn->nr);
+    pthread_mutex_lock(&conn->chunks.mutex);
+    const int buffered_chunks = conn->chunks.nr_of_chunks;
+    const bool all_chunks_available = conn->chunks_done;
+    pthread_mutex_unlock(&conn->chunks.mutex);
+
+    av_log(NULL, AV_LOG_INFO, "[dashenc_http] Starting immediate retry for request %s, attempt: %d, conn_nr: %d (with %d buffered chunks, all_done=%d)\n", 
+            conn->url, conn->retry_nr, conn->nr, buffered_chunks, all_chunks_available);
+    
     const int ret = io_open_for_retry(conn);
     if (ret < 0) {
-        av_log(NULL, AV_LOG_WARNING, "-event- request retry failed request: %s, ret=%d, attempt: %d, conn_nr: %d.\n",
+        av_log(NULL, AV_LOG_WARNING, "[dashenc_http] -event- request retry failed request: %s, ret=%d, attempt: %d, conn_nr: %d.\n",
                 conn->url, ret, conn->retry_nr, conn->nr);
-        retry(conn);
-        return;
+        return retry(conn);
     }
+    
+    // Clear any previous error state from the AVIOContext so writes can succeed
+    if (conn->out && conn->out->error < 0) {
+        av_log(NULL, AV_LOG_INFO, "[dashenc_http] Clearing AVIOContext error (%s) before retry. conn_nr: %d\n",
+               av_err2str(conn->out->error), conn->nr);
+        conn->out->error = 0;
+    }
+    
     pthread_mutex_lock(&conn->chunks.mutex);
     conn->chunks.last_chunk_written = 0; /* Restart writing chunks from the beginning */
     pthread_mutex_unlock(&conn->chunks.mutex);
+    
+    conn->req_opened = true; /* Mark request as opened so write thread can continue */
 
+    // Write all buffered chunks immediately
     while (write_chunk_if_available(conn)) {}
 
-    av_log(NULL, AV_LOG_INFO, "request retry done, start reading response. Request: %s, conn_nr: %d, attempt: %d.\n", conn->url, conn->nr, conn->retry_nr);
-    thr_io_close(conn);
+    av_log(NULL, AV_LOG_INFO, "[dashenc_http] request retry buffered chunks written. Request: %s, conn_nr: %d, attempt: %d. All chunks available: %d\n", 
+            conn->url, conn->nr, conn->retry_nr, all_chunks_available);
+    
+    // If all chunks were already available, we need to close the request.
+    // But we should NOT call thr_io_close() recursively, as it would call release_request() twice.
+    // Instead, we'll read the response here and return false to let the caller release the request.
+    if (all_chunks_available) {
+        av_log(NULL, AV_LOG_INFO, "[dashenc_http] request retry complete, all chunks were already available. Reading response. Request: %s, conn_nr: %d, attempt: %d.\n", 
+                conn->url, conn->nr, conn->retry_nr);
+        
+        int retry_ret = 0;
+        int retry_response_code = 0;
+        URLContext *http_url_context = ffio_geturlcontext(conn->out);
+        
+        if (http_url_context != NULL) {
+            avio_flush(conn->out);
+            retry_ret = ffurl_shutdown(http_url_context, AVIO_FLAG_WRITE);
+            retry_response_code = ff_http_get_code(http_url_context);
+        } else {
+            retry_ret = -1;
+        }
+        
+        if (retry_ret < 0 || retry_response_code >= kServerErrorsStart || retry_response_code == kUnauthorized) {
+            av_log(NULL, AV_LOG_WARNING, "[dashenc_http] -event- retry attempt failed after writing all chunks. ret=%d, response_code=%d, conn_nr: %d, url: %s, attempt: %d\n",
+                    retry_ret, retry_response_code, conn->nr, conn->url, conn->retry_nr);
+            
+            pthread_mutex_lock(&conn->open_mutex);
+            
+            // For 401, keep connection open to preserve auth state but mark request as closed
+            // For others, close and reopen the connection
+            if (retry_response_code != kUnauthorized) {
+                conn->opened = false;
+                if (conn->s != NULL) {
+                    ff_format_io_close(conn->s, &conn->out);
+                }
+            } else {
+                // For 401: keep TCP open but mark request as closed for next retry
+                conn->req_opened = false;
+            }
+            
+            pthread_mutex_unlock(&conn->open_mutex);
+            
+            // Recursively retry
+            return retry(conn);
+        }
+        
+        // Success! Return false to indicate the request should be released
+        av_log(NULL, AV_LOG_INFO, "[dashenc_http] Retry successful after writing all chunks. Request: %s, conn_nr: %d, attempt: %d.\n", 
+                conn->url, conn->nr, conn->retry_nr);
+        return false;
+    }
+    
+    // More chunks are expected, return true so write thread continues
+    av_log(NULL, AV_LOG_INFO, "[dashenc_http] request retry ongoing, waiting for more chunks. Request: %s, conn_nr: %d, attempt: %d.\n", 
+            conn->url, conn->nr, conn->retry_nr);
+    return true;
 }
 
 static void remove_from_list(connection *conn) {
-    av_log(NULL, AV_LOG_INFO, "Removing conn_nr: %d\n", conn->nr);
+    av_log(NULL, AV_LOG_INFO, "[dashenc_http] Removing conn_nr: %d\n", conn->nr);
     LIST_REMOVE(conn, entries);
     free_connection_number(conn->nr);
 }
@@ -386,7 +471,7 @@ static void remove_from_list(connection *conn) {
  * This method expects to be started from the connection thread.
  */
 static void connection_exit(connection *conn) {
-    av_log(conn->s, AV_LOG_INFO, "Removing conn %d\n", conn->nr);
+    av_log(conn->s, AV_LOG_INFO, "[dashenc_http] Removing conn %d\n", conn->nr);
     pthread_mutex_lock(&connections_mutex);
     remove_from_list(conn);
 
@@ -405,18 +490,12 @@ static void connection_exit(connection *conn) {
     pthread_exit(NULL);
 }
 
-enum {
-    kServerErrorsStart = 500
-};
-
 /**
  * This method closes the request and reads the response.
  */
 static void *thr_io_close(connection *conn) { /* NOLINT(misc-no-recursion) */
     int ret = 0;
     int response_code = 0;
-
-    av_log(NULL, AV_LOG_INFO, "thr_io_close conn_nr: %d, out_addr: %p \n", conn->nr, conn->out);
 
     if (conn->open_error) {
         ret = -1;
@@ -428,28 +507,64 @@ static void *thr_io_close(connection *conn) { /* NOLINT(misc-no-recursion) */
             ret = -1;
             response_code = 0;
         } else {
-            avio_flush(conn->out);
-            ret = ffurl_shutdown(http_url_context, AVIO_FLAG_WRITE);
-            response_code = ff_http_get_code(http_url_context);
+            // Check if there's already an error from writing (e.g., 401 detected during chunk write)
+            if (conn->out->error == AVERROR_HTTP_UNAUTHORIZED) {
+                av_log(NULL, AV_LOG_INFO, "[dashenc_http] thr_io_close: write error already detected (401), conn_nr=%d\n", conn->nr);
+                ret = conn->out->error;
+                response_code = kUnauthorized;
+            } else {
+                avio_flush(conn->out);
+                ret = ffurl_shutdown(http_url_context, AVIO_FLAG_WRITE);
+                response_code = ff_http_get_code(http_url_context);
+            }
+            av_log(NULL, AV_LOG_INFO, "[dashenc_http] thr_io_close: ret=%d, response_code=%d, conn_nr=%d, url=%s\n", 
+                   ret, response_code, conn->nr, conn->url);
         }
     }
 
-    if (ret < 0 || response_code >= kServerErrorsStart) {
-        av_log(NULL, AV_LOG_INFO, "-event- request failed ret=%d, conn_nr: %d, response_code: %d, url: %s.\n", ret, conn->nr, response_code, conn->url);
-        abort_if_needed(conn->must_succeed);
-        //must check if this is NULL or it causes crash on segmentation fault due to NULL pointer
-        //check why conn->s (AVFormatContext) becomes NULL
-        pthread_mutex_lock(&conn->open_mutex);
-        conn->opened = false;
-        if (conn->s != NULL) {
-            ff_format_io_close(conn->s, &conn->out);
+    // Handle errors: 5xx server errors or network failures
+    // For 401, we also retry but keep the connection open to preserve auth state
+    if (ret < 0 || response_code >= kServerErrorsStart || response_code == kUnauthorized) {
+        if (response_code != kUnauthorized) {
+            av_log(NULL, AV_LOG_INFO, "[dashenc_http] -event- request failed ret=%d, conn_nr: %d, response_code: %d, url: %s.\n", ret, conn->nr, response_code, conn->url);
+            abort_if_needed(conn->must_succeed);
         }
+        
+        
+        pthread_mutex_lock(&conn->open_mutex);
+        
+        if (response_code == kUnauthorized) {
+            // For 401: keep TCP open so auth state is preserved for retry, mark request as closed so next attempt sends new HTTP request
+            conn->req_opened = false;
+        } else {
+            // For other errors, close and reopen the connection
+            conn->opened = false;
+            //must check if this is NULL or it causes crash on segmentation fault due to NULL pointer
+            //check why conn->s (AVFormatContext) becomes NULL
+            if (conn->s != NULL) {
+                ff_format_io_close(conn->s, &conn->out);
+            }
+        }
+        
         pthread_mutex_unlock(&conn->open_mutex);
 
-        if (conn->retry) {
-            retry(conn);
+        const bool retry_ongoing = retry(conn);
+        if (retry_ongoing) {
+            // Retry is in progress and more chunks are expected.
+            // Return to write thread loop without releasing the request.
+            av_log(NULL, AV_LOG_INFO, "[dashenc_http] Retry ongoing, returning to write loop. conn_nr: %d\n", conn->nr);
+            return NULL;
         }
+
+        // If retry returned false, either retry completed or failed.
+        // Fall through to release_request.
     }
+
+    // Log the HTTP response with duration
+    const int64_t end_time_ms = US_TO_MS(av_gettime());
+    const int64_t duration_ms = end_time_ms - conn->request_start_time;
+    av_log(NULL, AV_LOG_INFO, "[dashenc_http] Final HTTP response: %d, duration: %"PRId64", url: %s\n", 
+           response_code, duration_ms, conn->url);
 
     release_request(conn);
     if (should_stop) {
@@ -463,7 +578,6 @@ static void *thr_io_close(connection *conn) { /* NOLINT(misc-no-recursion) */
 /**
  * Opens the TCP connection if it's not open.
  * Opens the request if it's not open.
- *
  */
 static int open_request_if_needed(connection *conn) {
     int ret = 0;
@@ -475,11 +589,16 @@ static int open_request_if_needed(connection *conn) {
         return conn->nr;
     }
 
+    /* Set timer for request duration measurement, but only on first attempt (not on retries) */
+    if (conn->retry_nr == 0) {
+        conn->request_start_time = US_TO_MS(av_gettime());
+    }
+
     if (!conn->opened) {
-        av_log(conn->s, AV_LOG_INFO, "Connection(%d) not yet open, opening and starting req %s\n", conn->nr, conn->url);
+        av_log(conn->s, AV_LOG_INFO, "[dashenc_http] connection not yet open, opening TCP and starting req. conn_nr: %d, url: %s\n", conn->nr, conn->url);
         ret = conn->s->io_open(conn->s, &(conn->out), conn->url, AVIO_FLAG_WRITE, &conn->options);
         if (ret < 0) {
-            av_log(conn->s, AV_LOG_WARNING, "Could not open %s\n", conn->url);
+            av_log(conn->s, AV_LOG_WARNING, "[dashenc_http] Could not open %s\n", conn->url);
             goto error;
         }
 
@@ -489,23 +608,23 @@ static int open_request_if_needed(connection *conn) {
 
     http_url_context = ffio_geturlcontext(conn->out);
     if (http_url_context == NULL) {
-        av_log(conn->s, AV_LOG_ERROR, "Could not get http_url_context!\n");
+        av_log(conn->s, AV_LOG_ERROR, "[dashenc_http] Could not get http_url_context!\n");
         goto error_close;
     }
 
-    av_log(conn->s, AV_LOG_INFO, "Connection(%d)\n", conn->nr);
-    av_log(conn->s, AV_LOG_INFO, "Connection(%d) start req on existing connection %s\n", conn->nr, conn->url);
+    av_log(conn->s, AV_LOG_INFO, "[dashenc_http] attempting to start new req on existing TCP connection, conn_nr: %d, url: %s\n", conn->nr, conn->url);
 
     ret = ff_http_do_new_request(http_url_context, conn->url);
     if (ret != 0) {
         const int64_t curr_time_ms = US_TO_MS(av_gettime());
         const int64_t idle_tims_ms = curr_time_ms - conn->release_time;
-        av_log(conn->s, AV_LOG_WARNING, "pool_io_open error conn_nr: %d, idle_time: %"PRId64", error: %s, name: %s\n", conn->nr, idle_tims_ms, av_err2str(ret), conn->url);
+        av_log(conn->s, AV_LOG_WARNING, "[dashenc_http] pool_io_open error conn_nr: %d, idle_time: %"PRId64", error: %s, name: %s\n", conn->nr, idle_tims_ms, av_err2str(ret), conn->url);
         goto error_close;
     }
 
 exit_opened:
     conn->req_opened = true;
+    conn->open_error = false;  /* Clear any error from previous failed attempts */
     pthread_mutex_unlock(&conn->open_mutex);
     return conn->nr;
 
@@ -518,21 +637,21 @@ error:
     conn->open_error = true;
     conn->req_opened = false;
     pthread_mutex_unlock(&conn->open_mutex);
-    return conn->retry ? conn->nr : ret;
+    return conn->nr;
 }
 
 /**
  * This method writes the chunks.
  * It is supposed to be passed to pthread_create.
  */
-static void *thr_io_write(void *arg) {
+static void *thr_io_write(void *arg) { /* NOLINT(readability-function-cognitive-complexity) */
     int ret = 0;
     connection *conn = (connection *)arg;
     //https://computing.llnl.gov/tutorials/pthreads/#ConditionVariables
 
     for (;;) {
         pthread_mutex_lock(&conn->chunks.mutex);
-        while (!chunk_is_available(&conn->chunks) && !conn->chunks_done) {
+        while ((!chunk_is_available(&conn->chunks) && !conn->chunks_done && !conn->write_error) || !conn->claimed) {
             pthread_cond_wait(&conn->chunks.cv, &conn->chunks.mutex);
             if (conn->cleanup_requested || should_stop) {
                 pthread_mutex_unlock(&conn->chunks.mutex);
@@ -540,24 +659,50 @@ static void *thr_io_write(void *arg) {
                 connection_exit(conn);
             }
         }
+        const bool chunks_done = conn->chunks_done;
+        const bool has_chunks = chunk_is_available(&conn->chunks);
+        const bool write_error = conn->write_error;
         pthread_mutex_unlock(&conn->chunks.mutex);
 
-        ret = open_request_if_needed(conn);
-        if (ret < 0) {
-            av_log(conn->s, AV_LOG_ERROR, "failed to open request, conn_nr: %d\n", conn->nr);
+        // If write error occurred, close and retry immediately
+        if (write_error) {
+            av_log(conn->s, AV_LOG_INFO, "[dashenc_http] Write error detected, closing request for retry. conn_nr: %d\n", conn->nr);
+            conn->write_error = false;  // Reset for next attempt
+            thr_io_close(conn);
             continue;
         }
 
-        while (write_chunk_if_available(conn)) {}
+        // If chunks_done is set but there are no chunks to write, close immediately without opening
+        if (chunks_done && !has_chunks) {
+            thr_io_close(conn);
+            continue;
+        }
 
-        if (conn->chunks_done) {
+        ret = open_request_if_needed(conn);
+        if (ret < 0) {
+            av_log(conn->s, AV_LOG_ERROR, "[dashenc_http] failed to open request, conn_nr: %d\n", conn->nr);
+            // Even if opening failed, we need to check if chunks_done is set
+            // to properly close the request and avoid calling open_request_if_needed() again
+            if (chunks_done) {
+                thr_io_close(conn);
+                continue;
+            }
+            continue;
+        }
+
+        // Only write chunks if we have chunks to write at this point
+        if (has_chunks) {
+            while (write_chunk_if_available(conn)) {}
+        }
+
+        if (chunks_done) {
             thr_io_close(conn);
             // after this no other action should be done on conn until a new request is started so make sure there are no statements below this.
             continue;
         }
     }
 
-    av_log(conn->s, AV_LOG_INFO, "dashenc_http thread done, conn_nr: %d.\n", conn->nr);
+    av_log(conn->s, AV_LOG_INFO, "[dashenc_http] dashenc_http thread done, conn_nr: %d.\n", conn->nr);
     return NULL;
 }
 
@@ -566,7 +711,7 @@ static void request_cleanup(connection *conn) {
         return;
     }
 
-    av_log(conn->s, AV_LOG_INFO, "Request cleanup of conn %d\n", conn->nr);
+    av_log(conn->s, AV_LOG_INFO, "[dashenc_http] Request cleanup of conn %d\n", conn->nr);
     conn->cleanup_requested = true;
 
     //signal connection thread
@@ -582,7 +727,7 @@ static void request_cleanup(connection *conn) {
 static void free_idle_connections(int nr_of_idle_connections, const int nr_of_connections_to_keep) {
     connection *conn = NULL;
 
-    av_log(NULL, AV_LOG_INFO, "free_idle_connections, nr_of_idle_connections: %d, nr_of_connections_to_keep: %d\n", nr_of_idle_connections, nr_of_connections_to_keep);
+    av_log(NULL, AV_LOG_INFO, "[dashenc_http] free_idle_connections, nr_of_idle_connections: %d, nr_of_connections_to_keep: %d\n", nr_of_idle_connections, nr_of_connections_to_keep);
 
     LIST_FOREACH(conn, &connections, entries) {
         if (nr_of_idle_connections <= nr_of_connections_to_keep) {
@@ -609,7 +754,7 @@ static connection *claim_connection(const char *url, const int need_new_connecti
     size_t len = 0;
 
     if (url == NULL) {
-        av_log(NULL, AV_LOG_INFO, "Claimed conn_id: -1, url: NULL\n");
+        av_log(NULL, AV_LOG_INFO, "[dashenc_http] Claimed conn_nr: -1, url: NULL\n");
         return NULL;
     }
 
@@ -626,6 +771,7 @@ static connection *claim_connection(const char *url, const int need_new_connecti
     }
 
     if (conn_nr == -1) {
+        av_log(NULL, AV_LOG_INFO, "[dashenc_http] No free connection found, creating new one for url: %s\n", url);
         conn = av_mallocz(sizeof(*conn));
         if (conn == NULL) {
             pthread_mutex_unlock(&connections_mutex);
@@ -642,25 +788,29 @@ static connection *claim_connection(const char *url, const int need_new_connecti
 
         pthread_attr_t attr;
         if (pthread_attr_init(&attr)) {
-            av_log(NULL, AV_LOG_FATAL, "Error creating thread attributes.\n");
+            av_log(NULL, AV_LOG_FATAL, "[dashenc_http] Error creating thread attributes.\n");
             abort();
         }
 
         if (pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED)) {
-            av_log(NULL, AV_LOG_FATAL, "Error setting thread attributes.\n");
+            av_log(NULL, AV_LOG_FATAL, "[dashenc_http] Error setting thread attributes.\n");
             abort();
         }
 
         if(pthread_create(&conn->w_thread, &attr, thr_io_write, conn)) {
-            av_log(NULL, AV_LOG_FATAL, "Error creating thread so abort.\n");
+            av_log(NULL, AV_LOG_FATAL, "[dashenc_http] Error creating thread so abort.\n");
             abort();
         }
 
         LIST_INSERT_HEAD(&connections, conn, entries);
-        av_log(NULL, AV_LOG_INFO, "No free connections so added one. Url: %s, conn_nr: %d\n", url, conn_nr);
+        av_log(NULL, AV_LOG_INFO, "[dashenc_http] No free connections so added one. Url: %s, conn_nr: %d\n", url, conn_nr);
     } else {
+        const int64_t idle_time = US_TO_MS(av_gettime()) - conn->release_time;
+        av_log(NULL, AV_LOG_INFO, "[dashenc_http] Reusing conn_nr: %d, idle for %lld ms, opened: %d, for url: %s\n", 
+               conn_nr, (long long)idle_time, (int)conn->opened, url);
         pthread_mutex_lock(&conn->open_mutex);
         if (need_new_connection && conn->opened) {
+            av_log(NULL, AV_LOG_INFO, "[dashenc_http] Closing connection because need_new_connection=1, conn_nr: %d\n", conn_nr);
             conn->opened = false;
             ff_format_io_close(conn->s, &conn->out);
         }
@@ -669,7 +819,7 @@ static connection *claim_connection(const char *url, const int need_new_connecti
         conn->nr = conn_nr;
     }
 
-    av_log(NULL, AV_LOG_INFO, "Claimed conn_id: %d, url: %s\n", conn_nr, url);
+    av_log(NULL, AV_LOG_INFO, "[dashenc_http] Claimed conn_nr: %d, url: %s\n", conn_nr, url);
     len = strlen(url) + 1;
     conn->url = malloc(len);
     av_strlcpy(conn->url, url, len);
@@ -694,7 +844,7 @@ static int open_request(AVFormatContext *ctx, char *url, AVDictionary **options)
 
     pthread_mutex_lock(&conn->open_mutex);
     if (conn->opened) {
-        av_log(ctx, AV_LOG_WARNING, "open_request while connection might be open. This is TODO for when not using persistent connections. conn_nr: %d\n", conn->nr);
+        av_log(ctx, AV_LOG_WARNING, "[dashenc_http] open_request while connection might be open. This is TODO for when not using persistent connections. conn_nr: %d\n", conn->nr);
     }
 
     ret = ctx->io_open(ctx, &conn->out, url, AVIO_FLAG_WRITE, options);
@@ -712,12 +862,12 @@ static int open_request(AVFormatContext *ctx, char *url, AVDictionary **options)
  * The claimed connection number is returned.
  */
 int pool_io_open(AVFormatContext *ctx, const char *filename,
-        AVDictionary **options, const int http_persistent, const int must_succeed, const int retry, const int need_new_connection) {
+        AVDictionary **options, const int http_persistent, const int must_succeed, const int need_new_connection) {
     const int http_base_proto = filename ? ff_is_http_proto(filename) : 0;
 
     if (!http_base_proto || !http_persistent) {
         //open_request returns the newly claimed conn_nr
-        av_log(ctx, AV_LOG_WARNING, "Non HTTP request %s\n", filename);
+        av_log(ctx, AV_LOG_WARNING, "[dashenc_http] Non HTTP request %s\n", filename);
         return open_request(ctx, filename, options);
     }
 
@@ -728,13 +878,12 @@ int pool_io_open(AVFormatContext *ctx, const char *filename,
 
     conn = get_conn(conn->nr);
     conn->must_succeed = must_succeed;
-    conn->retry = retry;
     conn->s = ctx;
     conn->options = NULL;
 
     const int ret = av_dict_copy(&conn->options, *options, 0);
     if (ret < 0) {
-        av_log(ctx, AV_LOG_WARNING, "Could not copy options for %s\n", filename);
+        av_log(ctx, AV_LOG_WARNING, "[dashenc_http] Could not copy options for %s\n", filename);
         abort_if_needed(must_succeed);
         return ret;
     }
@@ -744,7 +893,6 @@ int pool_io_open(AVFormatContext *ctx, const char *filename,
 #else
     UNUSED(http_persistent);
     UNUSED(must_succeed);
-    UNUSED(retry);
     UNUSED(need_new_connection);
 
     return AVERROR_MUXER_NOT_FOUND;
@@ -755,28 +903,27 @@ int pool_io_open(AVFormatContext *ctx, const char *filename,
  * Closes the request.
  */
 static void pool_conn_close(connection *conn) {
-    conn->chunks_done = true;
-
     pthread_mutex_lock(&conn->chunks.mutex);
+    conn->chunks_done = true;
     pthread_cond_signal(&conn->chunks.cv);
     pthread_mutex_unlock(&conn->chunks.mutex);
 }
 
 void pool_io_close(AVFormatContext *ctx, const char *filename, const int conn_nr) {
     if (conn_nr < 0) {
-        av_log(ctx, AV_LOG_WARNING, "Invalid conn_nr in pool_io_close for filename: %s, conn_nr: %d\n", filename, conn_nr);
+        av_log(ctx, AV_LOG_WARNING, "[dashenc_http] Invalid conn_nr in pool_io_close for filename: %s, conn_nr: %d\n", filename, conn_nr);
         return;
     }
 
     connection *conn = get_conn(conn_nr);
-    av_log(NULL, AV_LOG_INFO, "pool_io_close conn_nr: %d\n", conn_nr);
+    av_log(NULL, AV_LOG_INFO, "[dashenc_http] pool_io_close conn_nr: %d\n", conn_nr);
     pool_conn_close(conn);
 }
 
 void pool_free_all(AVFormatContext *ctx) {
     connection *conn = NULL;
 
-    av_log(ctx, AV_LOG_INFO, "pool_free_all\n");
+    av_log(ctx, AV_LOG_INFO, "[dashenc_http] pool_free_all\n");
 
     // Signal the connections to close
     should_stop = true;
@@ -798,13 +945,13 @@ void pool_free_all(AVFormatContext *ctx) {
     free_stats(chunk_write_time_stats);
     free_stats(conn_count_stats);
 
-    av_log(ctx, AV_LOG_INFO, "All requests are stopped\n");
+    av_log(ctx, AV_LOG_INFO, "[dashenc_http] All requests are stopped\n");
 }
 
 
 void pool_write_flush_mem(const int conn_nr) {
     if (conn_nr < 0) {
-        av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr in pool_write_flush_mem. conn_nr: %d\n", conn_nr);
+        av_log(NULL, AV_LOG_WARNING, "[dashenc_http] Invalid conn_nr in pool_write_flush_mem. conn_nr: %d\n", conn_nr);
         return;
     }
 
@@ -816,7 +963,7 @@ void pool_write_flush_mem(const int conn_nr) {
 
 void pool_write_flush(const unsigned char *buf, const int size, const int conn_nr) {
     if (conn_nr < 0) {
-        av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr in pool_write_flush. conn_nr: %d\n", conn_nr);
+        av_log(NULL, AV_LOG_WARNING, "[dashenc_http] Invalid conn_nr in pool_write_flush. conn_nr: %d\n", conn_nr);
         return;
     }
 
@@ -825,14 +972,14 @@ void pool_write_flush(const unsigned char *buf, const int size, const int conn_n
     //Save the chunk in memory
     Chunk *new_chunk = (Chunk *)av_mallocz(sizeof(*new_chunk));
     if (!new_chunk) {
-        av_log(NULL, AV_LOG_WARNING, "Could not malloc new_chunk.\n");
+        av_log(NULL, AV_LOG_WARNING, "[dashenc_http] Could not malloc new_chunk.\n");
         return;
     }
 
     new_chunk->size = size;
     new_chunk->buf = av_mallocz(size);
     if (new_chunk->buf == NULL) {
-        av_log(NULL, AV_LOG_WARNING, "Could not malloc pool_write_flush.\n");
+        av_log(NULL, AV_LOG_WARNING, "[dashenc_http] Could not malloc pool_write_flush.\n");
         return;
     }
     memcpy(new_chunk->buf, buf, size);
@@ -849,7 +996,7 @@ static int write_packet(void *opaque, const uint8_t *buf, int buf_size) {
         int64_t offset = buffer_data->ptr - buffer_data->buf;
         buffer_data->buf = av_realloc_f(buffer_data->buf, 2, buffer_data->size);
         if (!buffer_data->buf) {
-            return AVERROR(ENOMEM);
+            return AVERROR(ENOMEM); /* NOLINT(misc-include-cleaner) */
         }
         buffer_data->size *= 2;
         buffer_data->ptr = buffer_data->buf + offset;
@@ -870,7 +1017,7 @@ static int write_packet(void *opaque, const uint8_t *buf, int buf_size) {
  */
 AVIOContext *pool_create_mem_context(int conn_nr) {
     if (conn_nr < 0) {
-        av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr in pool_create_mem_context. conn_nr: %d\n", conn_nr);
+        av_log(NULL, AV_LOG_WARNING, "[dashenc_http] Invalid conn_nr in pool_create_mem_context. conn_nr: %d\n", conn_nr);
         return NULL;
     }
 
@@ -882,7 +1029,7 @@ AVIOContext *pool_create_mem_context(int conn_nr) {
     conn->mem->size = 0;
     conn->mem->ptr = conn->mem->buf = av_malloc(bd_buf_size);
     if (!conn->mem->buf) {
-        av_log(NULL, AV_LOG_WARNING, "Could not allocate memory bd_buf_size. conn_nr: %d\n", conn_nr);
+        av_log(NULL, AV_LOG_WARNING, "[dashenc_http] Could not allocate memory bd_buf_size. conn_nr: %d\n", conn_nr);
         return NULL;
     }
     conn->mem->size = conn->mem->room = bd_buf_size;
@@ -890,7 +1037,7 @@ AVIOContext *pool_create_mem_context(int conn_nr) {
     const int avio_ctx_buffer_size = 20;
     unsigned char *avio_ctx_buffer = av_malloc(avio_ctx_buffer_size);
     if (!avio_ctx_buffer) {
-        av_log(NULL, AV_LOG_WARNING, "Could not allocate memory avio_ctx_buffer_size. conn_nr: %d\n", conn_nr);
+        av_log(NULL, AV_LOG_WARNING, "[dashenc_http] Could not allocate memory avio_ctx_buffer_size. conn_nr: %d\n", conn_nr);
         return NULL;
     }
 
@@ -899,7 +1046,7 @@ AVIOContext *pool_create_mem_context(int conn_nr) {
 
 void pool_free_mem_context(AVIOContext **out, int conn_nr) {
     if (conn_nr < 0) {
-        av_log(NULL, AV_LOG_WARNING, "Invalid conn_nr in pool_free_mem_context. conn_nr: %d\n", conn_nr);
+        av_log(NULL, AV_LOG_WARNING, "[dashenc_http] Invalid conn_nr in pool_free_mem_context. conn_nr: %d\n", conn_nr);
         return;
     }
 
