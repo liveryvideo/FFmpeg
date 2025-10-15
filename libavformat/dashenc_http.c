@@ -534,7 +534,7 @@ static void *thr_io_close(connection *conn) { /* NOLINT(misc-no-recursion) */
         pthread_mutex_lock(&conn->open_mutex);
         
         if (response_code == kUnauthorized) {
-            // For 401: keep TCP open so auth state is preseved for retry, mark request as closed so next attempt sends new HTTP request
+            // For 401: keep TCP open so auth state is preserved for retry, mark request as closed so next attempt sends new HTTP request
             conn->req_opened = false;
         } else {
             // For other errors, close and reopen the connection
