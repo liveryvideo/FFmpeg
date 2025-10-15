@@ -631,7 +631,7 @@ error:
  * This method writes the chunks.
  * It is supposed to be passed to pthread_create.
  */
-static void *thr_io_write(void *arg) {
+static void *thr_io_write(void *arg) { /* NOLINT(readability-function-cognitive-complexity) */
     int ret = 0;
     connection *conn = (connection *)arg;
     //https://computing.llnl.gov/tutorials/pthreads/#ConditionVariables
