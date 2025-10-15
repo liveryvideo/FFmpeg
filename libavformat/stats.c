@@ -149,7 +149,7 @@ int64_t get_init_time(const AVPacket *pkt) {
     const uint8_t *side_data = av_packet_get_side_data(pkt, AV_PKT_DATA_STRINGS_METADATA, &size);
     if (!side_data || !size) {
         av_log(NULL, AV_LOG_VERBOSE, "Packet doesn't contain AV_PKT_DATA_STRINGS_METADATA, pts: %ld\n", pkt->pts);
-        return AVERROR(ENOENT);
+        return AVERROR(ENOENT); // NOLINT(misc-include-cleaner)
     }
 
     ret = av_packet_unpack_dictionary(side_data, size, &dict);
@@ -174,5 +174,5 @@ int64_t get_init_time(const AVPacket *pkt) {
 
     av_dict_free(&dict);
     av_log(NULL, AV_LOG_ERROR, "Failed to find %s, packet pts: %ld\n", key, pkt->pts);
-    return AVERROR(ENOENT);
+    return AVERROR(ENOENT); // NOLINT(misc-include-cleaner)
 }

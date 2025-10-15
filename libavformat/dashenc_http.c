@@ -8,7 +8,7 @@
  */
 #include "dashenc_http.h"
 
-#include <errno.h>
+#include <errno.h> /* NOLINT(misc-include-cleaner) */ /* Used for ENOMEM in AVERROR() macro */
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -98,6 +98,7 @@ typedef struct connection {
     int http_persistent;
     _Atomic bool cleanup_requested;  /* This conn should be deleted, can be caused by too many idle connections */
     buffer_data *mem;       /* Optional buffer to hold file content that will be written */
+    int64_t request_start_time;     /* Time when the request was first opened (in ms), used for logging request duration */
 } connection;
 
 /* If there will be to may connections, this should be replaced with hashtable */
@@ -198,6 +199,7 @@ static void release_request(connection *conn) {
     conn->release_time = release_time;
     conn->retry_nr = 0;
     conn->open_error = false;
+    conn->request_start_time = 0;
 }
 
 static void abort_if_needed(const int mustSucceed) {
@@ -558,6 +560,12 @@ static void *thr_io_close(connection *conn) { /* NOLINT(misc-no-recursion) */
         // Fall through to release_request.
     }
 
+    // Log the HTTP response with duration
+    const int64_t end_time_ms = US_TO_MS(av_gettime());
+    const int64_t duration_ms = end_time_ms - conn->request_start_time;
+    av_log(NULL, AV_LOG_INFO, "[dashenc_http] Final HTTP response: %d, duration: %"PRId64", url: %s\n", 
+           response_code, duration_ms, conn->url);
+
     release_request(conn);
     if (should_stop) {
         connection_exit(conn);
@@ -579,6 +587,11 @@ static int open_request_if_needed(connection *conn) {
     if (conn->req_opened) {
         pthread_mutex_unlock(&conn->open_mutex);
         return conn->nr;
+    }
+
+    /* Set timer for request duration measurement, but only on first attempt (not on retries) */
+    if (conn->retry_nr == 0) {
+        conn->request_start_time = US_TO_MS(av_gettime());
     }
 
     if (!conn->opened) {
@@ -983,7 +996,7 @@ static int write_packet(void *opaque, const uint8_t *buf, int buf_size) {
         int64_t offset = buffer_data->ptr - buffer_data->buf;
         buffer_data->buf = av_realloc_f(buffer_data->buf, 2, buffer_data->size);
         if (!buffer_data->buf) {
-            return AVERROR(ENOMEM);
+            return AVERROR(ENOMEM); /* NOLINT(misc-include-cleaner) */
         }
         buffer_data->size *= 2;
         buffer_data->ptr = buffer_data->buf + offset;
