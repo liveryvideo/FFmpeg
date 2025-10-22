@@ -1944,13 +1944,17 @@ static int http_check_early_response(URLContext *h)
     }
     
     /* Data is available - read it properly */
-    av_log(h, AV_LOG_INFO, "Early response detected during chunk write, reading headers\n");
+    av_log(h, AV_LOG_INFO, "Early response detected during chunk write, peeked byte: 0x%02x ('%c'), reading headers\n", 
+           (unsigned char)peek_buf[0], 
+           (peek_buf[0] >= 32 && peek_buf[0] <= 126) ? peek_buf[0] : '.');
     read_ret = ffurl_read(s->hd, s->buffer, BUFFER_SIZE);
     
     if (read_ret <= 0) {
         av_log(h, AV_LOG_WARNING, "Failed to read early response: %s\n", av_err2str(read_ret));
         return read_ret < 0 ? read_ret : AVERROR_EOF;
     }
+
+    av_log(h, AV_LOG_INFO, "\nRead %d bytes of early response data\n", read_ret);
     
     /* Parse the response headers */
     s->buf_ptr = s->buffer;
@@ -2079,6 +2083,31 @@ static int http_shutdown(URLContext *h, int flags)
 
             if (read_ret == AVERROR(EAGAIN)) {
                 av_log(h, AV_LOG_WARNING, "http_shutdown - again: %s, location: %s\n", av_err2str(read_ret), s->location);
+            }
+            
+            /* Drain any remaining response body to prevent it from being mistaken 
+             * as an early response for the next request. The server may send a 
+             * Content-Length body (e.g., "Request done") which must be consumed. */
+            if (read_ret >= 0 && s->filesize != UINT64_MAX && s->filesize > 0) {
+                uint8_t drain_buf[1024];
+                uint64_t bytes_to_drain = s->filesize;
+                av_log(h, AV_LOG_DEBUG, "Draining %"PRIu64" bytes of response body to clean connection\n", bytes_to_drain);
+                
+                while (bytes_to_drain > 0) {
+                    int drain_size = FFMIN(bytes_to_drain, sizeof(drain_buf));
+                    int drained = http_read_stream(h, drain_buf, drain_size);
+                    if (drained <= 0) {
+                        if (drained < 0) {
+                            av_log(h, AV_LOG_WARNING, "Failed to drain response body: %s\n", av_err2str(drained));
+                        }
+                        break;
+                    }
+                    bytes_to_drain -= drained;
+                }
+                
+                if (bytes_to_drain == 0) {
+                    av_log(h, AV_LOG_DEBUG, "Successfully drained entire response body\n");
+                }
             }
         }
         s->end_chunked_post = 1;
