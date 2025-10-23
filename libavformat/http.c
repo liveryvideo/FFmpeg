@@ -1921,33 +1921,68 @@ static int http_check_early_response(URLContext *h)
     HTTPContext *s = h->priv_data;
     int fd = ffurl_get_file_handle(s->hd);
     int read_ret;
+    int is_https = !strcmp(h->prot->name, "https");
     
     if (fd < 0) {
         return 0;
     }
     
-    /* Use MSG_PEEK to check if data is available without consuming it */
-    char peek_buf[1];
-    int peek_ret = recv(fd, peek_buf, 1, MSG_PEEK | MSG_DONTWAIT);
+    /* For HTTPS, we can't use raw socket recv() with MSG_PEEK because the data is
+     * encrypted at the socket level. We would peek at encrypted TLS record bytes 
+     * (e.g., 0x17 for Application Data) instead of the actual HTTP response.
+     * 
+     * Instead, for HTTPS we do a non-blocking read through the TLS layer by temporarily
+     * storing the original flags, setting AVIO_FLAG_NONBLOCK, and attempting a read.
+     * For HTTP, we continue using MSG_PEEK for efficiency. */
     
-    if (peek_ret <= 0) {
-        /* No data available (EAGAIN/EWOULDBLOCK) or connection closed */
-        if (peek_ret == 0) {
-            av_log(h, AV_LOG_WARNING, "Connection closed during chunk write\n");
-            return AVERROR_EOF;
+    if (is_https) {
+        /* For HTTPS/TLS, attempt a non-blocking read through the TLS layer */
+        int original_flags = s->hd->flags;
+        s->hd->flags |= AVIO_FLAG_NONBLOCK;
+        
+        read_ret = ffurl_read(s->hd, s->buffer, BUFFER_SIZE);
+        
+        /* Restore original flags */
+        s->hd->flags = original_flags;
+        
+        if (read_ret == AVERROR(EAGAIN)) {
+            /* No data available yet - this is expected during chunk write */
+            return 0;
+        } else if (read_ret <= 0) {
+            if (read_ret == 0) {
+                av_log(h, AV_LOG_WARNING, "Connection closed during chunk write (HTTPS)\n");
+                return AVERROR_EOF;
+            }
+            /* Other error - but might not be fatal, just no early response */
+            return 0;
         }
-        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            av_log(h, AV_LOG_WARNING, "Socket peek error during chunk write: %s\n", strerror(errno));
-            return AVERROR(errno);
+        
+        /* Data was available - we have an early response */
+        av_log(h, AV_LOG_INFO, "Early response detected during chunk write (HTTPS), read %d bytes\n", read_ret);
+    } else {
+        /* For HTTP, use MSG_PEEK to check if data is available without consuming it */
+        char peek_buf[1];
+        int peek_ret = recv(fd, peek_buf, 1, MSG_PEEK | MSG_DONTWAIT);
+        
+        if (peek_ret <= 0) {
+            /* No data available (EAGAIN/EWOULDBLOCK) or connection closed */
+            if (peek_ret == 0) {
+                av_log(h, AV_LOG_WARNING, "Connection closed during chunk write\n");
+                return AVERROR_EOF;
+            }
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                av_log(h, AV_LOG_WARNING, "Socket peek error during chunk write: %s\n", strerror(errno));
+                return AVERROR(errno);
+            }
+            return 0; /* No data available, which is expected */
         }
-        return 0; /* No data available, which is expected */
+        
+        /* Data is available - read it properly */
+        av_log(h, AV_LOG_INFO, "Early response detected during chunk write, peeked byte: 0x%02x ('%c'), reading headers\n", 
+               (unsigned char)peek_buf[0], 
+               (peek_buf[0] >= 32 && peek_buf[0] <= 126) ? peek_buf[0] : '.');
+        read_ret = ffurl_read(s->hd, s->buffer, BUFFER_SIZE);
     }
-    
-    /* Data is available - read it properly */
-    av_log(h, AV_LOG_INFO, "Early response detected during chunk write, peeked byte: 0x%02x ('%c'), reading headers\n", 
-           (unsigned char)peek_buf[0], 
-           (peek_buf[0] >= 32 && peek_buf[0] <= 126) ? peek_buf[0] : '.');
-    read_ret = ffurl_read(s->hd, s->buffer, BUFFER_SIZE);
     
     if (read_ret <= 0) {
         av_log(h, AV_LOG_WARNING, "Failed to read early response: %s\n", av_err2str(read_ret));
