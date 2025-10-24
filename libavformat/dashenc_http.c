@@ -299,12 +299,21 @@ static int io_open_for_retry(connection *conn) {
     int ret = 0;
     URLContext *http_url_context = NULL;
     AVFormatContext *ctx = conn->s;
+    AVDictionary *options_copy = NULL;
 
     pthread_mutex_lock(&conn->open_mutex);
     if (!conn->opened) {
         av_log(ctx, AV_LOG_INFO, "[dashenc_http] Connection for retry: %d not yet open. conn_nr: %d, url: %s\n", conn->retry_nr, conn->nr, conn->url);
 
-        ret = ctx->io_open(ctx, &(conn->out), conn->url, AVIO_FLAG_WRITE, &conn->options);
+        /* Copy options to avoid them being consumed by io_open, so they're preserved for future retries */
+        ret = av_dict_copy(&options_copy, conn->options, 0);
+        if (ret < 0) {
+            av_log(ctx, AV_LOG_WARNING, "[dashenc_http] io_open_for_retry %d could not copy options for url: %s\n", conn->retry_nr, conn->url);
+            goto error;
+        }
+
+        ret = ctx->io_open(ctx, &(conn->out), conn->url, AVIO_FLAG_WRITE, &options_copy);
+        av_dict_free(&options_copy);
         if (ret < 0) {
             av_log(ctx, AV_LOG_WARNING, "[dashenc_http] io_open_for_retry %d could not open url: %s\n", conn->retry_nr, conn->url);
             goto error;
@@ -582,6 +591,7 @@ static void *thr_io_close(connection *conn) { /* NOLINT(misc-no-recursion) */
 static int open_request_if_needed(connection *conn) {
     int ret = 0;
     URLContext *http_url_context = NULL;
+    AVDictionary *options_copy = NULL;
 
     pthread_mutex_lock(&conn->open_mutex);
     if (conn->req_opened) {
@@ -596,7 +606,16 @@ static int open_request_if_needed(connection *conn) {
 
     if (!conn->opened) {
         av_log(conn->s, AV_LOG_INFO, "[dashenc_http] connection not yet open, opening TCP and starting req. conn_nr: %d, url: %s\n", conn->nr, conn->url);
-        ret = conn->s->io_open(conn->s, &(conn->out), conn->url, AVIO_FLAG_WRITE, &conn->options);
+        
+        /* Copy options to avoid them being consumed by io_open, so they're preserved for future retries */
+        ret = av_dict_copy(&options_copy, conn->options, 0);
+        if (ret < 0) {
+            av_log(conn->s, AV_LOG_WARNING, "[dashenc_http] Could not copy options for %s\n", conn->url);
+            goto error;
+        }
+
+        ret = conn->s->io_open(conn->s, &(conn->out), conn->url, AVIO_FLAG_WRITE, &options_copy);
+        av_dict_free(&options_copy);
         if (ret < 0) {
             av_log(conn->s, AV_LOG_WARNING, "[dashenc_http] Could not open %s\n", conn->url);
             goto error;
