@@ -1463,6 +1463,67 @@ static int http_read_header(URLContext *h)
     return err;
 }
 
+/* Maximum number of interim (1xx) responses we are willing to skip before
+ * giving up on ever seeing a final one. */
+#define MAX_INTERIM_RESPONSES 8
+
+/**
+ * Read an HTTP response header, transparently skipping 1xx interim responses
+ * such as the "100 Continue" that answers our Expect: 100-continue.
+ *
+ * A 1xx is not the answer to the request: the real response still follows once
+ * the body has been sent. Stopping at the 1xx would both report the wrong
+ * status code and, worse, leave the real response sitting in the socket, where
+ * the next request on this (keep-alive) connection picks it up as its own -
+ * every response from then on is attributed to the wrong request.
+ */
+static int http_read_final_header(URLContext *h)
+{
+    HTTPContext *s = h->priv_data;
+    int err;
+
+    for (int i = 0; i < MAX_INTERIM_RESPONSES; i++) {
+        err = http_read_header(h);
+        if (err < 0)
+            return err;
+        if (s->http_code < 100 || s->http_code >= 200)
+            return err;
+
+        av_log(h, AV_LOG_DEBUG, "Skipping %d interim response, waiting for the final one\n",
+               s->http_code);
+        s->http_code  = 0;
+        s->end_header = 0;
+        s->line_count = 0;
+    }
+
+    av_log(h, AV_LOG_WARNING, "Got %d interim responses without a final one, giving up. url: %s\n",
+           MAX_INTERIM_RESPONSES, s->location);
+    return AVERROR(EIO);
+}
+
+/**
+ * Does the buffered data hold a complete header block, i.e. does it contain a
+ * blank line?
+ *
+ * http_read_header() falls through to a blocking socket read as soon as the
+ * buffer runs dry, so it may only be called on a partial response when we can
+ * afford to wait for the rest. Callers that cannot (the early response check
+ * during a chunked POST) use this to look before they leap.
+ */
+static int has_complete_header(const unsigned char *buf, const unsigned char *end)
+{
+    for (const unsigned char *p = buf; p < end; p++) {
+        if (*p != '\n')
+            continue;
+        /* A blank line is a "\n" or "\r\n" right after the preceding "\n". */
+        if (p + 1 < end && p[1] == '\n')
+            return 1;
+        if (p + 2 < end && p[1] == '\r' && p[2] == '\n')
+            return 1;
+    }
+    return 0;
+}
+
 /**
  * Escape unsafe characters in path in order to pass them safely to the HTTP
  * request. Insipred by the algorithm in GNU wget:
@@ -1646,7 +1707,7 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
     }
 
     /* wait for header */
-    err = http_read_header(h);
+    err = http_read_final_header(h);
     if (err < 0)
         goto done;
 
@@ -1782,7 +1843,7 @@ static int http_read_stream(URLContext *h, uint8_t *buf, int size)
         return AVERROR_EOF;
 
     if (s->end_chunked_post && !s->end_header) {
-        err = http_read_header(h);
+        err = http_read_final_header(h);
         if (err < 0)
             return err;
     }
@@ -1922,11 +1983,29 @@ static int http_check_early_response(URLContext *h)
     int fd = ffurl_get_file_handle(s->hd);
     int read_ret;
     int is_https = !strcmp(h->prot->name, "https");
-    
+    /* Bytes a previous call parsed a 1xx out of but could not parse to the end
+     * of the final response. They are moved to the front of the buffer so this
+     * read appends to them instead of overwriting them. */
+    int carry = s->buf_end > s->buf_ptr ? (int)(s->buf_end - s->buf_ptr) : 0;
+    int space;
+
     if (fd < 0) {
         return 0;
     }
-    
+
+    if (carry > 0 && s->buf_ptr != s->buffer) {
+        memmove(s->buffer, s->buf_ptr, carry);
+    }
+    s->buf_ptr = s->buffer;
+    s->buf_end = s->buffer + carry;
+
+    space = BUFFER_SIZE - carry;
+    if (space <= 0) {
+        av_log(h, AV_LOG_WARNING, "Early response headers exceed %d bytes, giving up\n", BUFFER_SIZE);
+        s->buf_end = s->buffer;
+        return AVERROR(EIO);
+    }
+
     /* For HTTPS, we can't use raw socket recv() with MSG_PEEK because the data is
      * encrypted at the socket level. We would peek at encrypted TLS record bytes 
      * (e.g., 0x17 for Application Data) instead of the actual HTTP response.
@@ -1940,7 +2019,7 @@ static int http_check_early_response(URLContext *h)
         int original_flags = s->hd->flags;
         s->hd->flags |= AVIO_FLAG_NONBLOCK;
         
-        read_ret = ffurl_read(s->hd, s->buffer, BUFFER_SIZE);
+        read_ret = ffurl_read(s->hd, s->buf_end, space);
         
         /* Restore original flags */
         s->hd->flags = original_flags;
@@ -1981,7 +2060,7 @@ static int http_check_early_response(URLContext *h)
         av_log(h, AV_LOG_INFO, "Early response detected during chunk write, peeked byte: 0x%02x ('%c'), reading headers\n", 
                (unsigned char)peek_buf[0], 
                (peek_buf[0] >= 32 && peek_buf[0] <= 126) ? peek_buf[0] : '.');
-        read_ret = ffurl_read(s->hd, s->buffer, BUFFER_SIZE);
+        read_ret = ffurl_read(s->hd, s->buf_end, space);
     }
     
     if (read_ret <= 0) {
@@ -1991,39 +2070,66 @@ static int http_check_early_response(URLContext *h)
 
     av_log(h, AV_LOG_INFO, "\nRead %d bytes of early response data\n", read_ret);
     
-    /* Parse the response headers */
-    s->buf_ptr = s->buffer;
-    s->buf_end = s->buffer + read_ret;
+    /* Parse the response headers, appended to whatever a previous call left. */
+    s->buf_end += read_ret;
     
-    int err = http_read_header(h);
-    
-    if (err >= 0 || (err < 0 && s->http_code != 0)) {
+    for (;;) {
+        http_read_header(h);
+
+        if (s->http_code == 0) {
+            /* Couldn't parse a status line - data incomplete or read error.
+             * Whatever is left is not a response we can resume parsing, so drop
+             * it rather than carrying it into the next call. */
+            s->buf_ptr = s->buffer;
+            s->buf_end = s->buffer;
+            return 0;
+        }
+
         av_log(h, AV_LOG_INFO, "Received early response during chunk write: HTTP %d\n", s->http_code);
-        
+
+        /* 1xx responses are informational: the server is acknowledging our
+         * Expect: 100-continue and the real response only follows once the body
+         * has been sent. Discard the interim response, reset the header parsing
+         * state so the final response is still read as a fresh response, and
+         * carry on writing chunks. Treating it as an error would abort the POST
+         * mid-body, leaving the request unterminated and the connection out of
+         * sync for whoever reuses it next. */
+        if (s->http_code >= 100 && s->http_code < 200) {
+            s->http_code  = 0;
+            s->end_header = 0;
+            s->line_count = 0;
+            /* The final response may have arrived in the same read. Parse on
+             * only if all of its headers are already buffered: http_read_header()
+             * blocks on the socket as soon as the buffer runs dry, which would
+             * stall this thread mid-body waiting for a response the server only
+             * sends once it has received the whole body. Anything left over is
+             * kept for the next call, which appends to it. */
+            if (has_complete_header(s->buf_ptr, s->buf_end))
+                continue;
+            return 0;
+        }
+
         if (s->http_code == 401) {
             int64_t req_time_ms = US_TO_MS(av_gettime()) - s->start_time_ms;
             av_log(h, AV_LOG_INFO, "Received 401 during chunked POST - nonce is stale%s\n",
                    s->willclose ? ", server will close connection" : ", keeping connection open for retry");
-            av_log(h, AV_LOG_INFO, "HTTP response: %d, duration: %"PRId64", url: %s\n", 
+            av_log(h, AV_LOG_INFO, "HTTP response: %d, duration: %"PRId64", url: %s\n",
                    s->http_code, req_time_ms, s->location);
-            
+
             /* Only keep connection open if server didn't send Connection: close */
             if (!s->willclose) {
                 s->buf_ptr = s->buffer;
                 s->buf_end = s->buffer;
                 s->early_auth_retry = 1;
             }
-            
+
             return 1; /* Early 401 detected */
         }
-        
+
         /* Got some other response - this is unexpected during chunk write */
         av_log(h, AV_LOG_WARNING, "Unexpected early response %d during chunked POST\n", s->http_code);
         return AVERROR(EIO);
     }
-    
-    /* Couldn't parse headers yet - data incomplete */
-    return 0;
 }
 
 static int http_read(URLContext *h, uint8_t *buf, int size)
@@ -2107,7 +2213,7 @@ static int http_shutdown(URLContext *h, int flags)
             int read_ret;
             //s->hd->flags |= AVIO_FLAG_NONBLOCK;
 
-            read_ret = http_read_header(h);
+            read_ret = http_read_final_header(h);
 
             curr_time_ms = US_TO_MS(av_gettime());
             req_time_ms = curr_time_ms - s->start_time_ms;

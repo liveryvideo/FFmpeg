@@ -99,6 +99,7 @@ typedef struct connection {
     _Atomic bool cleanup_requested;  /* This conn should be deleted, can be caused by too many idle connections */
     buffer_data *mem;       /* Optional buffer to hold file content that will be written */
     int64_t request_start_time;     /* Time when the request was first opened (in ms), used for logging request duration */
+    int response_code;      /* HTTP status of the last completed attempt of the current request, incl. retries */
 } connection;
 
 /* If there will be to may connections, this should be replaced with hashtable */
@@ -200,6 +201,7 @@ static void release_request(connection *conn) {
     conn->retry_nr = 0;
     conn->open_error = false;
     conn->request_start_time = 0;
+    conn->response_code = 0;
 }
 
 static void abort_if_needed(const int mustSucceed) {
@@ -432,6 +434,9 @@ static bool retry(connection *conn) { /* NOLINT(misc-no-recursion) */
         } else {
             retry_ret = -1;
         }
+        /* Report the status of the attempt that actually completed, not the one
+         * that triggered the retry. */
+        conn->response_code = retry_response_code;
         
         if (retry_ret < 0 || retry_response_code >= kServerErrorsStart || retry_response_code == kUnauthorized) {
             av_log(NULL, AV_LOG_WARNING, "[dashenc_http] -event- retry attempt failed after writing all chunks. ret=%d, response_code=%d, conn_nr: %d, url: %s, attempt: %d\n",
@@ -530,6 +535,7 @@ static void *thr_io_close(connection *conn) { /* NOLINT(misc-no-recursion) */
                    ret, response_code, conn->nr, conn->url);
         }
     }
+    conn->response_code = response_code;
 
     // Handle errors: 5xx server errors or network failures
     // For 401, we also retry but keep the connection open to preserve auth state
@@ -573,7 +579,7 @@ static void *thr_io_close(connection *conn) { /* NOLINT(misc-no-recursion) */
     const int64_t end_time_ms = US_TO_MS(av_gettime());
     const int64_t duration_ms = end_time_ms - conn->request_start_time;
     av_log(NULL, AV_LOG_INFO, "[dashenc_http] Final HTTP response: %d, duration: %"PRId64", url: %s\n", 
-           response_code, duration_ms, conn->url);
+           conn->response_code, duration_ms, conn->url);
 
     release_request(conn);
     if (should_stop) {
@@ -582,6 +588,136 @@ static void *thr_io_close(connection *conn) { /* NOLINT(misc-no-recursion) */
 
     conn->req_opened = false;
     return NULL;
+}
+
+/* Name of the body-less request used to complete the digest handshake on a
+ * freshly opened connection. It is never referenced by a manifest, and it is
+ * always answered with a 401, so the origin never stores anything under it. */
+#define kAuthProbeName "auth-probe"
+
+/**
+ * Build the URL for the auth probe: the directory of the request we are about
+ * to make, plus a fixed name, plus the original query string. The digest nonce
+ * is not bound to a URI, so any path on this host primes the same auth state,
+ * but the query may carry parameters the origin needs to accept the request at
+ * all, so it is kept.
+ * Returns NULL if no sensible sibling path can be derived, in which case the
+ * caller should simply open the real URL.
+ */
+static char *make_auth_probe_url(const char *url) {
+    if (url == NULL) {
+        return NULL;
+    }
+
+    const char *host_start = strstr(url, "://");
+    if (host_start == NULL) {
+        return NULL;
+    }
+    host_start += 3;
+
+    /* The path ends at the query or fragment; a '/' beyond that is not a path
+     * separator and must not be mistaken for one. */
+    const char *path_end = host_start + strcspn(host_start, "?#");
+
+    const char *last_slash = NULL;
+    for (const char *pos = host_start; pos < path_end; pos++) {
+        if (*pos == '/') {
+            last_slash = pos;
+        }
+    }
+    if (last_slash == NULL) {
+        return NULL;
+    }
+
+    const int base_len = (int)(last_slash - url) + 1;
+    return av_asprintf("%.*s%s%s", base_len, url, kAuthProbeName, path_end);
+}
+
+/**
+ * Open a new TCP connection with the HTTP digest handshake already completed.
+ *
+ * MSL5 answers our Expect: 100-continue with "100 Continue" and only evaluates
+ * authentication once it has received the complete body, so the 401 carrying
+ * the digest challenge arrives a full segment duration after the request
+ * started. Doing that handshake on the segment request means the segment is
+ * uploaded twice and arrives one segment duration late.
+ *
+ * Instead we first send a body-less request. Its terminating chunk goes out
+ * immediately, so the challenge comes back after a single round trip, and the
+ * segment request that follows on the same connection carries a valid
+ * Authorization header on its first attempt.
+ *
+ * If anything about the probe fails we fall back to opening the real URL
+ * directly, which is exactly the behaviour we had before.
+ */
+static int open_connection_authenticated(connection *conn, AVDictionary **options) {
+    AVDictionary *probe_options = NULL;
+    char *probe_url = make_auth_probe_url(conn->url);
+
+    if (probe_url == NULL) {
+        return conn->s->io_open(conn->s, &(conn->out), conn->url, AVIO_FLAG_WRITE, options);
+    }
+
+    /* io_open consumes the dictionary, so the probe gets its own copy and the
+     * caller's copy stays intact for the fallback below. */
+    int ret = av_dict_copy(&probe_options, *options, 0);
+    if (ret < 0) {
+        av_log(conn->s, AV_LOG_WARNING, "[dashenc_http] could not copy options for auth probe, conn_nr: %d, error: %s\n",
+               conn->nr, av_err2str(ret));
+        goto fallback;
+    }
+
+    ret = conn->s->io_open(conn->s, &(conn->out), probe_url, AVIO_FLAG_WRITE, &probe_options);
+    av_dict_free(&probe_options);
+    if (ret < 0) {
+        av_log(conn->s, AV_LOG_WARNING, "[dashenc_http] auth probe could not be opened, conn_nr: %d, error: %s\n",
+               conn->nr, av_err2str(ret));
+        goto fallback;
+    }
+
+    URLContext *http_url_context = ffio_geturlcontext(conn->out);
+    if (http_url_context == NULL) {
+        av_log(conn->s, AV_LOG_WARNING, "[dashenc_http] auth probe has no url context, conn_nr: %d\n", conn->nr);
+        goto fallback_close;
+    }
+
+    /* Empty body: this sends the terminating chunk and reads the 401, which
+     * stores the digest challenge on the connection. A 401 is not treated as
+     * an error here as long as no credentials were sent yet, so ret is 0. */
+    avio_flush(conn->out);
+    ret = ffurl_shutdown(http_url_context, AVIO_FLAG_WRITE);
+    if (ret < 0) {
+        av_log(conn->s, AV_LOG_WARNING, "[dashenc_http] auth probe failed, conn_nr: %d, error: %s\n",
+               conn->nr, av_err2str(ret));
+        goto fallback_close;
+    }
+
+    /* Reuse the now authenticated connection for the request we actually want.
+     * This returns AVERROR_EOF if the server asked us to close the connection,
+     * in which case the fallback opens a fresh one. */
+    ret = ff_http_do_new_request(http_url_context, conn->url);
+    if (ret < 0) {
+        av_log(conn->s, AV_LOG_WARNING, "[dashenc_http] could not reuse pre-authenticated connection, conn_nr: %d, error: %s\n",
+               conn->nr, av_err2str(ret));
+        goto fallback_close;
+    }
+
+    av_log(conn->s, AV_LOG_INFO, "[dashenc_http] pre-authenticated new connection, conn_nr: %d, url: %s\n",
+           conn->nr, conn->url);
+    av_freep((void*)&probe_url);
+    return 0;
+
+fallback_close:
+    if (conn->out != NULL) {
+        ff_format_io_close(conn->s, &(conn->out));
+    }
+fallback:
+    /* av_dict_copy() can fail after partially filling the destination, so free
+     * it here too. Freeing an already freed dict is a no-op. */
+    av_dict_free(&probe_options);
+    av_freep((void*)&probe_url);
+    conn->out = NULL;
+    return conn->s->io_open(conn->s, &(conn->out), conn->url, AVIO_FLAG_WRITE, options);
 }
 
 /**
@@ -614,7 +750,7 @@ static int open_request_if_needed(connection *conn) {
             goto error;
         }
 
-        ret = conn->s->io_open(conn->s, &(conn->out), conn->url, AVIO_FLAG_WRITE, &options_copy);
+        ret = open_connection_authenticated(conn, &options_copy);
         av_dict_free(&options_copy);
         if (ret < 0) {
             av_log(conn->s, AV_LOG_WARNING, "[dashenc_http] Could not open %s\n", conn->url);
