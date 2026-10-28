@@ -82,7 +82,7 @@ typedef struct connection {
     pthread_mutex_t open_mutex;
 
     _Atomic int64_t release_time;    /* Time the last request of the connection has finished */
-    AVFormatContext *s;      /* Used to clean up the TCP connection if closing of a request fails */
+    AVFormatContext *s;      /* Owner of the connection, set by claim_connection under connections_mutex */
     pthread_t w_thread;      /* Thread that is used to write the chunks */
     LIST_ENTRY(connection) entries;
 
@@ -97,6 +97,7 @@ typedef struct connection {
     AVDictionary *options;
     int http_persistent;
     _Atomic bool cleanup_requested;  /* This conn should be deleted, can be caused by too many idle connections */
+    _Atomic bool exit_after_request; /* The owner (s) is being freed, exit after the current request */
     buffer_data *mem;       /* Optional buffer to hold file content that will be written */
     int64_t request_start_time;     /* Time when the request was first opened (in ms), used for logging request duration */
     int response_code;      /* HTTP status of the last completed attempt of the current request, incl. retries */
@@ -112,7 +113,7 @@ const static int max_idle_connections = 15;
 
 static stats *chunk_write_time_stats;
 static stats *conn_count_stats;
-static _Atomic bool should_stop = false;
+static int pool_users = 0; /* Nr of muxers using the pool, guarded by connections_mutex */
 
 enum {
     kConnectionNumbersBitmapSize = 1 << 8,
@@ -283,7 +284,6 @@ static connection *get_conn(int conn_nr) {
             break;
         }
     }
-    pthread_mutex_unlock(&connections_mutex);
     if (conn == NULL || conn->nr != conn_nr) {
         av_log(NULL, AV_LOG_FATAL, "[dashenc_http] connection %d not found. Aborting...\n", conn_nr);
         if (LIST_FIRST(&connections) != NULL) {
@@ -293,6 +293,7 @@ static connection *get_conn(int conn_nr) {
         }
         abort();
     }
+    pthread_mutex_unlock(&connections_mutex);
     return conn;
 }
 
@@ -499,7 +500,7 @@ static void connection_exit(connection *conn) {
     pthread_cond_destroy(&conn->chunks.cv);
     free(conn);
 
-    pthread_cond_signal(&connections_thread_exit_cv);
+    pthread_cond_broadcast(&connections_thread_exit_cv);
     pthread_mutex_unlock(&connections_mutex);
     pthread_exit(NULL);
 }
@@ -582,7 +583,7 @@ static void *thr_io_close(connection *conn) { /* NOLINT(misc-no-recursion) */
            conn->response_code, duration_ms, conn->url);
 
     release_request(conn);
-    if (should_stop) {
+    if (conn->exit_after_request) {
         connection_exit(conn);
     }
 
@@ -808,7 +809,7 @@ static void *thr_io_write(void *arg) { /* NOLINT(readability-function-cognitive-
         pthread_mutex_lock(&conn->chunks.mutex);
         while ((!chunk_is_available(&conn->chunks) && !conn->chunks_done && !conn->write_error) || !conn->claimed) {
             pthread_cond_wait(&conn->chunks.cv, &conn->chunks.mutex);
-            if (conn->cleanup_requested || should_stop) {
+            if (conn->cleanup_requested || conn->exit_after_request) {
                 pthread_mutex_unlock(&conn->chunks.mutex);
                 release_request(conn);
                 connection_exit(conn);
@@ -900,7 +901,7 @@ static void free_idle_connections(int nr_of_idle_connections, const int nr_of_co
  * Claims a free connection and returns it.
  * Released connections are used first.
  */
-static connection *claim_connection(const char *url, const int need_new_connection) {
+static connection *claim_connection(AVFormatContext *ctx, const char *url, const int need_new_connection) {
     int64_t lowest_release_time = US_TO_MS(av_gettime());
     int conn_nr = -1;
     int conn_idle_count = 0;
@@ -908,14 +909,14 @@ static connection *claim_connection(const char *url, const int need_new_connecti
     connection *conn_l = NULL;
     size_t len = 0;
 
-    if (url == NULL) {
-        av_log(NULL, AV_LOG_INFO, "[dashenc_http] Claimed conn_nr: -1, url: NULL\n");
+    if (ctx == NULL || url == NULL) {
+        av_log(NULL, AV_LOG_INFO, "[dashenc_http] Claimed conn_nr: -1, ctx: %p, url: %s\n", (void *)ctx, url ? url : "NULL");
         return NULL;
     }
 
     pthread_mutex_lock(&connections_mutex);
     LIST_FOREACH(conn_l, &connections, entries) {
-        if (!conn_l->claimed && !conn_l->cleanup_requested) {
+        if (!conn_l->claimed && !conn_l->cleanup_requested && !conn_l->exit_after_request) {
             if ((conn_nr == -1) || (conn->release_time != 0 && conn_l->release_time < lowest_release_time)) {
                 conn_nr = conn_l->nr;
                 conn = conn_l;
@@ -937,6 +938,7 @@ static connection *claim_connection(const char *url, const int need_new_connecti
 
         conn_nr = get_connection_number();
         conn->nr = conn_nr;
+        conn->s = ctx;
 
         pthread_mutex_init(&conn->chunks.mutex, NULL);
         pthread_cond_init(&conn->chunks.cv, NULL);
@@ -969,6 +971,7 @@ static connection *claim_connection(const char *url, const int need_new_connecti
             conn->opened = false;
             ff_format_io_close(conn->s, &conn->out);
         }
+        conn->s = ctx;
         pthread_mutex_unlock(&conn->open_mutex);
 
         conn->nr = conn_nr;
@@ -995,7 +998,11 @@ static connection *claim_connection(const char *url, const int need_new_connecti
  */
 static int open_request(AVFormatContext *ctx, char *url, AVDictionary **options) {
     int ret = 0;
-    connection *conn = claim_connection(url, 0);
+    connection *conn = claim_connection(ctx, url, 0);
+    if (conn == NULL) {
+        av_log(ctx, AV_LOG_ERROR, "[dashenc_http] Could not claim a connection for %s\n", url);
+        return AVERROR(ENOMEM);
+    }
 
     pthread_mutex_lock(&conn->open_mutex);
     if (conn->opened) {
@@ -1029,11 +1036,15 @@ int pool_io_open(AVFormatContext *ctx, const char *filename,
 #if CONFIG_HTTP_PROTOCOL
 
     //claim new item from pool and open connection if needed
-    connection *conn = claim_connection(filename, need_new_connection);
+    connection *conn = claim_connection(ctx, filename, need_new_connection);
+    if (conn == NULL) {
+        av_log(ctx, AV_LOG_ERROR, "[dashenc_http] Could not claim a connection for %s\n", filename);
+        abort_if_needed(must_succeed);
+        return AVERROR(ENOMEM);
+    }
 
     conn = get_conn(conn->nr);
     conn->must_succeed = must_succeed;
-    conn->s = ctx;
     conn->options = NULL;
 
     const int ret = av_dict_copy(&conn->options, *options, 0);
@@ -1075,16 +1086,35 @@ void pool_io_close(AVFormatContext *ctx, const char *filename, const int conn_nr
     pool_conn_close(conn);
 }
 
+/* Expects connections_mutex to be locked. */
+static bool has_connections_of(const AVFormatContext *ctx) {
+    connection *conn = NULL;
+
+    LIST_FOREACH(conn, &connections, entries) {
+        if (conn->s == ctx) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void pool_free_all(AVFormatContext *ctx) {
     connection *conn = NULL;
 
-    av_log(ctx, AV_LOG_INFO, "[dashenc_http] pool_free_all\n");
+    if (ctx == NULL) {
+        av_log(NULL, AV_LOG_ERROR, "[dashenc_http] pool_free_all called without a context\n");
+        return;
+    }
 
-    // Signal the connections to close
-    should_stop = true;
+    av_log(ctx, AV_LOG_INFO, "[dashenc_http] pool_free_all\n");
 
     pthread_mutex_lock(&connections_mutex);
     LIST_FOREACH(conn, &connections, entries) {
+        if (conn->s != ctx) {
+            continue;
+        }
+
+        conn->exit_after_request = true;
         if (conn->claimed) {
             pool_conn_close(conn);
         } else {
@@ -1092,15 +1122,24 @@ void pool_free_all(AVFormatContext *ctx) {
         }
     }
 
-    while (!LIST_EMPTY(&connections)) {
+    while (has_connections_of(ctx)) {
         pthread_cond_wait(&connections_thread_exit_cv, &connections_mutex);
+    }
+
+    if (pool_users <= 0) {
+        av_log(ctx, AV_LOG_ERROR, "[dashenc_http] pool_free_all without a matching pool_init, pool_users: %d\n", pool_users);
+    } else {
+        pool_users--;
+        if (pool_users == 0) {
+            free_stats(chunk_write_time_stats);
+            free_stats(conn_count_stats);
+            chunk_write_time_stats = NULL;
+            conn_count_stats = NULL;
+        }
     }
     pthread_mutex_unlock(&connections_mutex);
 
-    free_stats(chunk_write_time_stats);
-    free_stats(conn_count_stats);
-
-    av_log(ctx, AV_LOG_INFO, "[dashenc_http] All requests are stopped\n");
+    av_log(ctx, AV_LOG_INFO, "[dashenc_http] All requests of this muxer are stopped\n");
 }
 
 
@@ -1217,6 +1256,11 @@ void pool_free_mem_context(AVIOContext **out, int conn_nr) {
 }
 
 void pool_init() {
-    chunk_write_time_stats = init_stats("chunk_write_time", kDefaultStatsTime);
-    conn_count_stats = init_stats("nr_of_connections", kDefaultStatsTime);
+    pthread_mutex_lock(&connections_mutex);
+    if (pool_users == 0) {
+        chunk_write_time_stats = init_stats("chunk_write_time", kDefaultStatsTime);
+        conn_count_stats = init_stats("nr_of_connections", kDefaultStatsTime);
+    }
+    pool_users++;
+    pthread_mutex_unlock(&connections_mutex);
 }
