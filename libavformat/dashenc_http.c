@@ -82,7 +82,7 @@ typedef struct connection {
     pthread_mutex_t open_mutex;
 
     _Atomic int64_t release_time;    /* Time the last request of the connection has finished */
-    AVFormatContext *s;      /* Owner of the connection, set by claim_connection under connections_mutex */
+    AVFormatContext *s;      /* Owner of the connection, set once when claim_connection creates it */
     pthread_t w_thread;      /* Thread that is used to write the chunks */
     LIST_ENTRY(connection) entries;
 
@@ -797,6 +797,21 @@ error:
 }
 
 /**
+ * Exits the connection thread if its connection is being cleaned up or its owner is being freed.
+ * Expects conn->chunks.mutex to be locked; it is only unlocked when the thread exits.
+ * The flags are set under that same mutex, so checking them before every wait cannot miss a signal.
+ */
+static void exit_if_requested(connection *conn) {
+    if (!conn->cleanup_requested && !conn->exit_after_request) {
+        return;
+    }
+
+    pthread_mutex_unlock(&conn->chunks.mutex);
+    release_request(conn);
+    connection_exit(conn);
+}
+
+/**
  * This method writes the chunks.
  * It is supposed to be passed to pthread_create.
  */
@@ -808,12 +823,9 @@ static void *thr_io_write(void *arg) { /* NOLINT(readability-function-cognitive-
     for (;;) {
         pthread_mutex_lock(&conn->chunks.mutex);
         while ((!chunk_is_available(&conn->chunks) && !conn->chunks_done && !conn->write_error) || !conn->claimed) {
+            exit_if_requested(conn);
             pthread_cond_wait(&conn->chunks.cv, &conn->chunks.mutex);
-            if (conn->cleanup_requested || conn->exit_after_request) {
-                pthread_mutex_unlock(&conn->chunks.mutex);
-                release_request(conn);
-                connection_exit(conn);
-            }
+            exit_if_requested(conn);
         }
         const bool chunks_done = conn->chunks_done;
         const bool has_chunks = chunk_is_available(&conn->chunks);
@@ -868,19 +880,19 @@ static void request_cleanup(connection *conn) {
     }
 
     av_log(conn->s, AV_LOG_INFO, "[dashenc_http] Request cleanup of conn %d\n", conn->nr);
-    conn->cleanup_requested = true;
 
     //signal connection thread
     pthread_mutex_lock(&conn->chunks.mutex);
+    conn->cleanup_requested = true;
     pthread_cond_signal(&conn->chunks.cv);
     pthread_mutex_unlock(&conn->chunks.mutex);
 }
 
 /**
- * Trigger deletion of idle connections.
+ * Trigger deletion of idle connections of ctx.
  * Expects connections_mutex to be locked.
  */
-static void free_idle_connections(int nr_of_idle_connections, const int nr_of_connections_to_keep) {
+static void free_idle_connections(const AVFormatContext *ctx, int nr_of_idle_connections, const int nr_of_connections_to_keep) {
     connection *conn = NULL;
 
     av_log(NULL, AV_LOG_INFO, "[dashenc_http] free_idle_connections, nr_of_idle_connections: %d, nr_of_connections_to_keep: %d\n", nr_of_idle_connections, nr_of_connections_to_keep);
@@ -890,7 +902,7 @@ static void free_idle_connections(int nr_of_idle_connections, const int nr_of_co
             break;
         }
 
-        if (!conn->claimed) {
+        if (conn->s == ctx && !conn->claimed) {
             request_cleanup(conn);
             nr_of_idle_connections--;
         }
@@ -898,11 +910,11 @@ static void free_idle_connections(int nr_of_idle_connections, const int nr_of_co
 }
 
 /**
- * Claims a free connection and returns it.
- * Released connections are used first.
+ * Claims a free connection of ctx and returns it.
+ * The idle connection of ctx that was released first is reused, otherwise a new one is created.
  */
 static connection *claim_connection(AVFormatContext *ctx, const char *url, const int need_new_connection) {
-    int64_t lowest_release_time = US_TO_MS(av_gettime());
+    int64_t lowest_release_time = 0;
     int conn_nr = -1;
     int conn_idle_count = 0;
     connection *conn = NULL;
@@ -916,14 +928,18 @@ static connection *claim_connection(AVFormatContext *ctx, const char *url, const
 
     pthread_mutex_lock(&connections_mutex);
     LIST_FOREACH(conn_l, &connections, entries) {
-        if (!conn_l->claimed && !conn_l->cleanup_requested && !conn_l->exit_after_request) {
-            if ((conn_nr == -1) || (conn->release_time != 0 && conn_l->release_time < lowest_release_time)) {
-                conn_nr = conn_l->nr;
-                conn = conn_l;
-                lowest_release_time = conn->release_time;
-            }
-            conn_idle_count++;
+        /* Only reuse connections of this muxer: the TCP stream is tied to its host and its options, and its
+         * owner (s) is what pool_free_all scopes the teardown to. */
+        if (conn_l->s != ctx || conn_l->claimed || conn_l->cleanup_requested || conn_l->exit_after_request) {
+            continue;
         }
+
+        if (conn == NULL || conn_l->release_time < lowest_release_time) {
+            conn_nr = conn_l->nr;
+            conn = conn_l;
+            lowest_release_time = conn_l->release_time;
+        }
+        conn_idle_count++;
     }
 
     if (conn_nr == -1) {
@@ -971,7 +987,6 @@ static connection *claim_connection(AVFormatContext *ctx, const char *url, const
             conn->opened = false;
             ff_format_io_close(conn->s, &conn->out);
         }
-        conn->s = ctx;
         pthread_mutex_unlock(&conn->open_mutex);
 
         conn->nr = conn_nr;
@@ -984,7 +999,7 @@ static connection *claim_connection(AVFormatContext *ctx, const char *url, const
     conn->claimed = true;
 
     if(conn_idle_count > max_idle_connections){
-        free_idle_connections(conn_idle_count, max_idle_connections); /* NOLINT(readability-suspicious-call-argument) */
+        free_idle_connections(ctx, conn_idle_count, max_idle_connections); /* NOLINT(readability-suspicious-call-argument) */
     }
 
     pthread_mutex_unlock(&connections_mutex);
@@ -1114,7 +1129,11 @@ void pool_free_all(AVFormatContext *ctx) {
             continue;
         }
 
+        pthread_mutex_lock(&conn->chunks.mutex);
         conn->exit_after_request = true;
+        pthread_cond_signal(&conn->chunks.cv);
+        pthread_mutex_unlock(&conn->chunks.mutex);
+
         if (conn->claimed) {
             pool_conn_close(conn);
         } else {
