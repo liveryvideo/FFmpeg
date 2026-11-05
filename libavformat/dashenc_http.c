@@ -373,6 +373,12 @@ enum {
  * Returns false if retry failed or should release the request.
  */
 static bool retry(connection *conn) { /* NOLINT(misc-no-recursion) */
+    if (conn->exit_after_request) {
+        av_log(NULL, AV_LOG_INFO, "[dashenc_http] Skipping retry, owner is being freed. request: %s, attempt: %d, conn_nr: %d.\n",
+                conn->url, conn->retry_nr, conn->nr);
+        return false;
+    }
+
     if (conn->retry_nr > kRetryCount) {
         av_log(NULL, AV_LOG_WARNING, "[dashenc_http] -event- request retry failed. Giving up. request: %s, attempt: %d, conn_nr: %d.\n",
                 conn->url, conn->retry_nr, conn->nr);
@@ -802,7 +808,17 @@ error:
  * The flags are set under that same mutex, so checking them before every wait cannot miss a signal.
  */
 static void exit_if_requested(connection *conn) {
+    if (conn == NULL) {
+        av_log(NULL, AV_LOG_ERROR, "[dashenc_http] exit_if_requested called without a connection\n");
+        return;
+    }
+
     if (!conn->cleanup_requested && !conn->exit_after_request) {
+        return;
+    }
+
+    // An open request is completed by thr_io_close(), which exits afterwards.
+    if (conn->claimed && conn->chunks_done && !conn->cleanup_requested) {
         return;
     }
 
@@ -895,6 +911,11 @@ static void request_cleanup(connection *conn) {
 static void free_idle_connections(const AVFormatContext *ctx, int nr_of_idle_connections, const int nr_of_connections_to_keep) {
     connection *conn = NULL;
 
+    if (ctx == NULL) {
+        av_log(NULL, AV_LOG_ERROR, "[dashenc_http] free_idle_connections called without a context\n");
+        return;
+    }
+
     av_log(NULL, AV_LOG_INFO, "[dashenc_http] free_idle_connections, nr_of_idle_connections: %d, nr_of_connections_to_keep: %d\n", nr_of_idle_connections, nr_of_connections_to_keep);
 
     LIST_FOREACH(conn, &connections, entries) {
@@ -915,7 +936,6 @@ static void free_idle_connections(const AVFormatContext *ctx, int nr_of_idle_con
  */
 static connection *claim_connection(AVFormatContext *ctx, const char *url, const int need_new_connection) {
     int64_t lowest_release_time = 0;
-    int conn_nr = -1;
     int conn_idle_count = 0;
     connection *conn = NULL;
     connection *conn_l = NULL;
@@ -935,14 +955,13 @@ static connection *claim_connection(AVFormatContext *ctx, const char *url, const
         }
 
         if (conn == NULL || conn_l->release_time < lowest_release_time) {
-            conn_nr = conn_l->nr;
             conn = conn_l;
             lowest_release_time = conn_l->release_time;
         }
         conn_idle_count++;
     }
 
-    if (conn_nr == -1) {
+    if (conn == NULL) {
         av_log(NULL, AV_LOG_INFO, "[dashenc_http] No free connection found, creating new one for url: %s\n", url);
         conn = av_mallocz(sizeof(*conn));
         if (conn == NULL) {
@@ -952,8 +971,7 @@ static connection *claim_connection(AVFormatContext *ctx, const char *url, const
 
         pthread_mutex_init(&conn->open_mutex, NULL);
 
-        conn_nr = get_connection_number();
-        conn->nr = conn_nr;
+        conn->nr = get_connection_number();
         conn->s = ctx;
 
         pthread_mutex_init(&conn->chunks.mutex, NULL);
@@ -976,23 +994,21 @@ static connection *claim_connection(AVFormatContext *ctx, const char *url, const
         }
 
         LIST_INSERT_HEAD(&connections, conn, entries);
-        av_log(NULL, AV_LOG_INFO, "[dashenc_http] No free connections so added one. Url: %s, conn_nr: %d\n", url, conn_nr);
+        av_log(NULL, AV_LOG_INFO, "[dashenc_http] No free connections so added one. Url: %s, conn_nr: %d\n", url, conn->nr);
     } else {
         const int64_t idle_time = US_TO_MS(av_gettime()) - conn->release_time;
         av_log(NULL, AV_LOG_INFO, "[dashenc_http] Reusing conn_nr: %d, idle for %lld ms, opened: %d, for url: %s\n", 
-               conn_nr, (long long)idle_time, (int)conn->opened, url);
+               conn->nr, (long long)idle_time, (int)conn->opened, url);
         pthread_mutex_lock(&conn->open_mutex);
         if (need_new_connection && conn->opened) {
-            av_log(NULL, AV_LOG_INFO, "[dashenc_http] Closing connection because need_new_connection=1, conn_nr: %d\n", conn_nr);
+            av_log(NULL, AV_LOG_INFO, "[dashenc_http] Closing connection because need_new_connection=1, conn_nr: %d\n", conn->nr);
             conn->opened = false;
             ff_format_io_close(conn->s, &conn->out);
         }
         pthread_mutex_unlock(&conn->open_mutex);
-
-        conn->nr = conn_nr;
     }
 
-    av_log(NULL, AV_LOG_INFO, "[dashenc_http] Claimed conn_nr: %d, url: %s\n", conn_nr, url);
+    av_log(NULL, AV_LOG_INFO, "[dashenc_http] Claimed conn_nr: %d, url: %s\n", conn->nr, url);
     len = strlen(url) + 1;
     conn->url = malloc(len);
     av_strlcpy(conn->url, url, len);
@@ -1058,7 +1074,6 @@ int pool_io_open(AVFormatContext *ctx, const char *filename,
         return AVERROR(ENOMEM);
     }
 
-    conn = get_conn(conn->nr);
     conn->must_succeed = must_succeed;
     conn->options = NULL;
 
@@ -1105,6 +1120,11 @@ void pool_io_close(AVFormatContext *ctx, const char *filename, const int conn_nr
 static bool has_connections_of(const AVFormatContext *ctx) {
     connection *conn = NULL;
 
+    if (ctx == NULL) {
+        av_log(NULL, AV_LOG_ERROR, "[dashenc_http] has_connections_of called without a context\n");
+        return false;
+    }
+
     LIST_FOREACH(conn, &connections, entries) {
         if (conn->s == ctx) {
             return true;
@@ -1129,16 +1149,19 @@ void pool_free_all(AVFormatContext *ctx) {
             continue;
         }
 
+        if (!conn->claimed) {
+            pthread_mutex_lock(&conn->chunks.mutex);
+            conn->exit_after_request = true;
+            pthread_mutex_unlock(&conn->chunks.mutex);
+            request_cleanup(conn);
+            continue;
+        }
+
         pthread_mutex_lock(&conn->chunks.mutex);
         conn->exit_after_request = true;
+        conn->chunks_done = true;
         pthread_cond_signal(&conn->chunks.cv);
         pthread_mutex_unlock(&conn->chunks.mutex);
-
-        if (conn->claimed) {
-            pool_conn_close(conn);
-        } else {
-            request_cleanup(conn);
-        }
     }
 
     while (has_connections_of(ctx)) {
