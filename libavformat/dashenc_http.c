@@ -97,7 +97,7 @@ typedef struct connection {
     AVDictionary *options;
     int http_persistent;
     _Atomic bool cleanup_requested;  /* This conn should be deleted, can be caused by too many idle connections */
-    _Atomic bool exit_after_request; /* The owner (s) is being freed, exit after the current request */
+    _Atomic bool exit_after_request; /* The owner (s) is being freed: abandon the current request and exit at the next check */
     buffer_data *mem;       /* Optional buffer to hold file content that will be written */
     int64_t request_start_time;     /* Time when the request was first opened (in ms), used for logging request duration */
     int response_code;      /* HTTP status of the last completed attempt of the current request, incl. retries */
@@ -493,13 +493,16 @@ static void remove_from_list(connection *conn) {
  */
 static void connection_exit(connection *conn) {
     av_log(conn->s, AV_LOG_INFO, "[dashenc_http] Removing conn %d\n", conn->nr);
-    pthread_mutex_lock(&connections_mutex);
-    remove_from_list(conn);
 
+    /* Closing an abandoned request blocks in http_shutdown() until the origin answers or the rw timeout fires,
+     * so it is done before connections_mutex is taken: the other muxer's pool calls must not wait for it. */
     pthread_mutex_lock(&conn->open_mutex);
     conn->opened = false;
     ff_format_io_close(conn->s, &conn->out);
     pthread_mutex_unlock(&conn->open_mutex);
+
+    pthread_mutex_lock(&connections_mutex);
+    remove_from_list(conn);
 
     pthread_mutex_destroy(&conn->open_mutex);
     pthread_mutex_destroy(&conn->chunks.mutex);
@@ -806,6 +809,9 @@ error:
  * Exits the connection thread if its connection is being cleaned up or its owner is being freed.
  * Expects conn->chunks.mutex to be locked; it is only unlocked when the thread exits.
  * The flags are set under that same mutex, so checking them before every wait cannot miss a signal.
+ * A request that is still claimed is abandoned, whatever its state: the owner is being freed and does not
+ * care whether the upload completes at the origin. connection_exit() closes the connection, which ends the
+ * chunked body with whatever was sent so far.
  */
 static void exit_if_requested(connection *conn) {
     if (conn == NULL) {
@@ -814,11 +820,6 @@ static void exit_if_requested(connection *conn) {
     }
 
     if (!conn->cleanup_requested && !conn->exit_after_request) {
-        return;
-    }
-
-    // An open request is completed by thr_io_close(), which exits afterwards.
-    if (conn->claimed && conn->chunks_done && !conn->cleanup_requested) {
         return;
     }
 
@@ -838,8 +839,9 @@ static void *thr_io_write(void *arg) { /* NOLINT(readability-function-cognitive-
 
     for (;;) {
         pthread_mutex_lock(&conn->chunks.mutex);
+        /* Also checked outside the wait loop: a request whose open keeps failing has chunks queued and never waits. */
+        exit_if_requested(conn);
         while ((!chunk_is_available(&conn->chunks) && !conn->chunks_done && !conn->write_error) || !conn->claimed) {
-            exit_if_requested(conn);
             pthread_cond_wait(&conn->chunks.cv, &conn->chunks.mutex);
             exit_if_requested(conn);
         }
@@ -1066,24 +1068,26 @@ int pool_io_open(AVFormatContext *ctx, const char *filename,
 
 #if CONFIG_HTTP_PROTOCOL
 
-    //claim new item from pool and open connection if needed
-    connection *conn = claim_connection(ctx, filename, need_new_connection);
-    if (conn == NULL) {
-        av_log(ctx, AV_LOG_ERROR, "[dashenc_http] Could not claim a connection for %s\n", filename);
-        abort_if_needed(must_succeed);
-        return AVERROR(ENOMEM);
-    }
-
-    conn->must_succeed = must_succeed;
-    conn->options = NULL;
-
-    const int ret = av_dict_copy(&conn->options, *options, 0);
+    /* Copied before a connection is claimed, so a failure leaves nothing to release from this thread. */
+    AVDictionary *request_options = NULL;
+    const int ret = av_dict_copy(&request_options, *options, 0);
     if (ret < 0) {
         av_log(ctx, AV_LOG_WARNING, "[dashenc_http] Could not copy options for %s\n", filename);
         abort_if_needed(must_succeed);
         return ret;
     }
 
+    //claim new item from pool and open connection if needed
+    connection *conn = claim_connection(ctx, filename, need_new_connection);
+    if (conn == NULL) {
+        av_log(ctx, AV_LOG_ERROR, "[dashenc_http] Could not claim a connection for %s\n", filename);
+        av_dict_free(&request_options);
+        abort_if_needed(must_succeed);
+        return AVERROR(ENOMEM);
+    }
+
+    conn->must_succeed = must_succeed;
+    conn->options = request_options;
     conn->http_persistent = http_persistent;
     return conn->nr;
 #else
@@ -1149,17 +1153,8 @@ void pool_free_all(AVFormatContext *ctx) {
             continue;
         }
 
-        if (!conn->claimed) {
-            pthread_mutex_lock(&conn->chunks.mutex);
-            conn->exit_after_request = true;
-            pthread_mutex_unlock(&conn->chunks.mutex);
-            request_cleanup(conn);
-            continue;
-        }
-
         pthread_mutex_lock(&conn->chunks.mutex);
         conn->exit_after_request = true;
-        conn->chunks_done = true;
         pthread_cond_signal(&conn->chunks.cv);
         pthread_mutex_unlock(&conn->chunks.mutex);
     }

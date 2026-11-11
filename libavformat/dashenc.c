@@ -660,6 +660,8 @@ static void dash_free(AVFormatContext *s)
 
     av_log(s, AV_LOG_INFO, "dashenc.c dash_free\n");
 
+    pool_free_all(s);
+
     if (c->as) {
         for (i = 0; i < c->nb_as; i++) {
             av_dict_free(&c->as[i].metadata);
@@ -696,8 +698,6 @@ static void dash_free(AVFormatContext *s)
     if (c->s_ctx)
         free_stats_context(c->s_ctx);
     av_freep(&c->streams);
-
-    pool_free_all(s);
     av_free(c->seg_start_deviation_stats);
 }
 
@@ -1539,6 +1539,8 @@ static int dash_init(AVFormatContext *s)
     char basename[1024];
     int *bitrates;
 
+    pool_init();
+
     c->last_written_segment_index = -1;
     c->nr_of_streams_to_flush = 0;
     if (c->single_file_name)
@@ -1637,9 +1639,6 @@ static int dash_init(AVFormatContext *s)
     c->streams = av_mallocz(sizeof(*c->streams) * s->nb_streams);
     if (!c->streams)
         return AVERROR(ENOMEM);
-
-    /* dash_free() returns before pool_free_all() while c->streams is unset, so init and free must pair from here on */
-    pool_init();
 
     if ((ret = parse_adaptation_sets(s)) < 0)
         return ret;
