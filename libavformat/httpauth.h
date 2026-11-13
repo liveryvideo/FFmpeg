@@ -22,6 +22,8 @@
 #ifndef AVFORMAT_HTTPAUTH_H
 #define AVFORMAT_HTTPAUTH_H
 
+#include <stdint.h>
+
 /**
  * Authentication types, ordered from weakest to strongest.
  */

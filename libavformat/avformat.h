@@ -3186,6 +3186,21 @@ int avformat_match_stream_specifier(AVFormatContext *s, AVStream *st,
 int avformat_queue_attached_pictures(AVFormatContext *s);
 
 /**
+ * Change target latency time
+ *
+ * @param latency     new target latency time to set to
+ * @param deviations_allowed
+ */
+void av_set_target_latency(int64_t latency, int deviations_allowed);
+
+/**
+ * Change availability time offset
+ *
+ * @param offset     new time to set availability time offset to
+ */
+void av_set_availability_time_offset(int64_t offset);
+
+/**
  * @}
  */
 

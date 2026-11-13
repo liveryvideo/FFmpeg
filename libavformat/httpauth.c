@@ -26,6 +26,8 @@
 #include "internal.h"
 #include "libavutil/random_seed.h"
 #include "libavutil/md5.h"
+#include "libavutil/sha.h"
+#include "libavutil/sha512.h"
 #include "urldecode.h"
 
 static void handle_basic_params(void *context, const char *key,
@@ -133,8 +135,36 @@ static void update_md5_strings(struct AVMD5 *md5ctx, ...)
     va_end(vl);
 }
 
-/* Generate a digest reply, according to RFC 2617. */
-static char *make_digest_auth(HTTPAuthState *state, const char *username,
+static void update_sha256_strings(struct AVSHA *sha256ctx, ...)
+{
+    va_list vl;
+
+    va_start(vl, sha256ctx);
+    while (1) {
+        const char* str = va_arg(vl, const char*);
+        if (!str)
+            break;
+        av_sha_update(sha256ctx, str, strlen(str));
+    }
+    va_end(vl);
+}
+
+static void update_sha512_strings(struct AVSHA512 *sha512ctx, ...)
+{
+    va_list vl;
+
+    va_start(vl, sha512ctx);
+    while (1) {
+        const char* str = va_arg(vl, const char*);
+        if (!str)
+            break;
+        av_sha512_update(sha512ctx, str, strlen(str));
+    }
+    va_end(vl);
+}
+
+/* Generate a digest reply, according to RFC 7616 and backcompatible to RFC 2617. */
+static char *make_md5_digest_auth(HTTPAuthState *state, const char *username,
                               const char *password, const char *uri,
                               const char *method)
 {
@@ -165,9 +195,7 @@ static char *make_digest_auth(HTTPAuthState *state, const char *username,
     update_md5_strings(md5ctx, username, ":", state->realm, ":", password, NULL);
     av_md5_final(md5ctx, hash);
     ff_data_to_hex(A1hash, hash, 16, 1);
-
-    if (!strcmp(digest->algorithm, "") || !strcmp(digest->algorithm, "MD5")) {
-    } else if (!strcmp(digest->algorithm, "MD5-sess")) {
+    if (!strcmp(digest->algorithm, "MD5-sess")) {
         av_md5_init(md5ctx);
         update_md5_strings(md5ctx, A1hash, ":", digest->nonce, ":", cnonce, NULL);
         av_md5_final(md5ctx, hash);
@@ -235,6 +263,159 @@ static char *make_digest_auth(HTTPAuthState *state, const char *username,
     av_strlcatf(authstr, len, "\r\n");
 
     return authstr;
+}
+
+/* Generate a digest reply, according to RFC 7616 and backcompatible to RFC 2617. */
+static char *make_sha_digest_auth(HTTPAuthState *state, const char *username,
+                              const char *password, const char *uri,
+                              const char *method)
+{
+    DigestParams *digest = &state->digest_params;
+    int len;
+    uint32_t cnonce_buf[4];
+    char cnonce[33];
+    char nc[9];
+    int i;
+    char A1hash[65], A2hash[65], response[65];
+    struct AVSHA *sha256ctx; //SHA-256
+    struct AVSHA512 *sha512ctx; //SHA-512-256
+    uint8_t hash[32];
+    char *authstr;
+
+    digest->nc++;
+    snprintf(nc, sizeof(nc), "%08x", digest->nc);
+
+    /* Generate a client nonce. */
+    for (i = 0; i < 4; i++)
+        cnonce_buf[i] = av_get_random_seed();
+    ff_data_to_hex(cnonce, (const uint8_t*) cnonce_buf, sizeof(cnonce_buf), 1);
+    cnonce[2*sizeof(cnonce_buf)] = 0;
+    if (!strcmp(digest->algorithm, "SHA-256") || !strcmp(digest->algorithm, "SHA-256-sess")) {
+        sha256ctx = av_sha_alloc();
+        if (!sha256ctx)
+            return NULL;
+        av_sha_init(sha256ctx, 256);
+        update_sha256_strings(sha256ctx, username, ":", state->realm, ":", password, NULL);
+        av_sha_final(sha256ctx, hash);
+        ff_data_to_hex(A1hash, hash, 32, 1);
+        A1hash[64] = 0;
+        if (!strcmp(digest->algorithm, "SHA-256-sess")) {
+            av_sha_init(sha256ctx, 256);
+            update_sha256_strings(sha256ctx, A1hash, ":", digest->nonce, ":", cnonce, NULL);
+            av_sha_final(sha256ctx, hash);
+            ff_data_to_hex(A1hash, hash, 32, 1);
+            A1hash[64] = 0;
+        }
+        av_sha_init(sha256ctx, 256);
+        update_sha256_strings(sha256ctx, method, ":", uri, NULL);
+        av_sha_final(sha256ctx, hash);
+        ff_data_to_hex(A2hash, hash, 32, 1);
+        A2hash[64] = 0;
+
+        av_sha_init(sha256ctx, 256);
+        update_sha256_strings(sha256ctx, A1hash, ":", digest->nonce, NULL);
+        if (!strcmp(digest->qop, "auth") || !strcmp(digest->qop, "auth-int")) {
+            update_sha256_strings(sha256ctx, ":", nc, ":", cnonce, ":", digest->qop, NULL);
+        }
+        update_sha256_strings(sha256ctx, ":", A2hash, NULL);
+        av_sha_final(sha256ctx, hash);
+        ff_data_to_hex(response, hash, 32, 1);
+        response[64] = 0;
+
+        av_free(sha256ctx);
+    }
+    else if (!strcmp(digest->algorithm, "SHA-512-256")|| !strcmp(digest->algorithm, "SHA-512-256-sess")) {
+        sha512ctx = av_sha512_alloc();
+        if (!sha512ctx)
+            return NULL;
+        av_sha512_init(sha512ctx, 256);
+        update_sha512_strings(sha512ctx, username, ":", state->realm, ":", password, NULL);
+        av_sha512_final(sha512ctx, hash);
+        ff_data_to_hex(A1hash, hash, 32, 1);
+        A1hash[64] = 0;
+        if (!strcmp(digest->algorithm, "SHA-512-256-sess")) {
+            av_sha512_init(sha512ctx, 256);
+            update_sha512_strings(sha512ctx, A1hash, ":", digest->nonce, ":", cnonce, NULL);
+            av_sha512_final(sha512ctx, hash);
+            ff_data_to_hex(A1hash, hash, 32, 1);
+            A1hash[64] = 0;
+        }
+        av_sha512_init(sha512ctx, 256);
+        update_sha512_strings(sha512ctx, method, ":", uri, NULL);
+        av_sha512_final(sha512ctx, hash);
+        ff_data_to_hex(A2hash, hash, 32, 1);
+        A2hash[64] = 0;
+
+        av_sha512_init(sha512ctx, 256);
+        update_sha512_strings(sha512ctx, A1hash, ":", digest->nonce, NULL);
+        if (!strcmp(digest->qop, "auth") || !strcmp(digest->qop, "auth-int")) {
+            update_sha512_strings(sha512ctx, ":", nc, ":", cnonce, ":", digest->qop, NULL);
+        }
+        update_sha512_strings(sha512ctx, ":", A2hash, NULL);
+        av_sha512_final(sha512ctx, hash);
+        ff_data_to_hex(response, hash, 32, 1);
+        response[64] = 0;
+
+        av_free(sha512ctx);
+    }
+    if (!strcmp(digest->qop, "") || !strcmp(digest->qop, "auth")) {
+    } else if (!strcmp(digest->qop, "auth-int")) {
+        /* qop=auth-int not supported */
+        return NULL;
+    } else {
+        /* Unsupported qop value. */
+        return NULL;
+    }
+
+    len = strlen(username) + strlen(state->realm) + strlen(digest->nonce) +
+              strlen(uri) + strlen(response) + strlen(digest->algorithm) +
+              strlen(digest->opaque) + strlen(digest->qop) + strlen(cnonce) +
+              strlen(nc) + 150;
+
+    authstr = av_malloc(len);
+    if (!authstr)
+        return NULL;
+    snprintf(authstr, len, "Authorization: Digest ");
+
+    /* TODO: Escape the quoted strings properly. */
+    av_strlcatf(authstr, len, "username=\"%s\"",   username);
+    av_strlcatf(authstr, len, ", realm=\"%s\"",     state->realm);
+    av_strlcatf(authstr, len, ", nonce=\"%s\"",     digest->nonce);
+    av_strlcatf(authstr, len, ", uri=\"%s\"",       uri);
+    av_strlcatf(authstr, len, ", response=\"%s\"",  response);
+
+    // we are violating the RFC and use "" because all others seem to do that too.
+    if (digest->algorithm[0])
+        av_strlcatf(authstr, len, ", algorithm=\"%s\"",  digest->algorithm);
+
+    if (digest->opaque[0])
+        av_strlcatf(authstr, len, ", opaque=\"%s\"", digest->opaque);
+    if (digest->qop[0]) {
+        av_strlcatf(authstr, len, ", qop=\"%s\"",    digest->qop);
+        av_strlcatf(authstr, len, ", cnonce=\"%s\"", cnonce);
+        av_strlcatf(authstr, len, ", nc=%s",         nc);
+    }
+
+    av_strlcatf(authstr, len, "\r\n");
+
+    return authstr;
+}
+
+/* Generate a digest reply, according to RFC 7616 and backcompatible to RFC 2617. */
+static char *make_digest_auth(HTTPAuthState *state, const char *username,
+                              const char *password, const char *uri,
+                              const char *method)
+{
+    DigestParams *digest = &state->digest_params;
+    if (!strcmp(digest->algorithm, "") || !strcmp(digest->algorithm, "MD5") || !strcmp(digest->algorithm, "MD5-sess")) {
+        return make_md5_digest_auth(state, username, password, uri, method);
+    }
+    if (!strcmp(digest->algorithm, "SHA-256")    || !strcmp(digest->algorithm, "SHA-256-sess") || 
+             !strcmp(digest->algorithm, "SHA-512-256")|| !strcmp(digest->algorithm, "SHA-512-256-sess")) {
+        return make_sha_digest_auth(state, username, password, uri, method);
+    }
+    /* Unsupported algorithm */
+    return NULL;
 }
 
 char *ff_http_auth_create_response(HTTPAuthState *state, const char *auth,

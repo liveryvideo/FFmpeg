@@ -491,6 +491,15 @@ int ffio_open_whitelist(AVIOContext **s, const char *filename, int flags,
         ffurl_close(h);
         return err;
     }
+
+    if (h->incoming_filename != NULL) {
+        av_dict_set(options, "incoming_filename", h->incoming_filename, 0);
+    }
+
+    if (h->incoming_address != NULL) {
+        av_dict_set(options, "incoming_address", h->incoming_address, 0);
+    }
+
     return 0;
 }
 
@@ -610,6 +619,8 @@ int ffurl_closep(URLContext **hh)
         av_freep(&h->priv_data);
     }
     av_opt_free(h);
+    av_free(h->incoming_filename);
+    av_free(h->incoming_address);
     av_freep(hh);
     return ret;
 }

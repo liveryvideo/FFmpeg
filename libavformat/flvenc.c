@@ -42,6 +42,8 @@
 #include "mux.h"
 #include "libavutil/opt.h"
 #include "libavcodec/put_bits.h"
+#include "stats.h"
+#include "stats_context.h"
 
 
 static const AVCodecTag flv_video_codec_ids[] = {
@@ -136,6 +138,9 @@ typedef struct FLVContext {
     int64_t *last_ts;
     int *metadata_pkt_written;
     int *track_idx_map;
+
+    const char *output_name;
+    StatsContext *s_ctx;
 } FLVContext;
 
 static int get_audio_flags(AVFormatContext *s, AVCodecParameters *par)
@@ -974,6 +979,7 @@ static int flv_init(struct AVFormatContext *s)
     int i;
     int video_ctr = 0, audio_ctr = 0;
     FLVContext *flv = s->priv_data;
+    int *bitrates;
 
     flv->last_ts = av_calloc(s->nb_streams, sizeof(*flv->last_ts));
     flv->metadata_pkt_written = av_calloc(s->nb_streams, sizeof(*flv->metadata_pkt_written));
@@ -1076,6 +1082,19 @@ static int flv_init(struct AVFormatContext *s)
     }
 
     flv->delay = AV_NOPTS_VALUE;
+
+    bitrates = av_calloc(s->nb_streams, sizeof(int));
+    for (int i = 0; i < s->nb_streams; i++) {
+        bitrates[i] = s->streams[i]->codecpar->bit_rate;
+    }
+
+    flv->s_ctx = alloc_new_stats_context(flv->output_name, s->nb_streams, bitrates);
+    av_free(bitrates);
+    if (flv->s_ctx == NULL) {
+        av_log(s, AV_LOG_ERROR, "Failed to allocate stats context\n");
+        return AVERROR(ENOMEM);
+    }
+
 
     return 0;
 }
@@ -1479,6 +1498,9 @@ static int flv_write_packet(AVFormatContext *s, AVPacket *pkt)
                 break;
         }
     }
+
+    print_stats(flv->s_ctx, par->codec_type, pkt);
+
 fail:
     av_free(data);
 
@@ -1518,6 +1540,8 @@ static void flv_deinit(AVFormatContext *s)
     av_freep(&flv->last_ts);
     av_freep(&flv->metadata_pkt_written);
     av_freep(&flv->track_idx_map);
+
+    free_stats_context(flv->s_ctx);
 }
 
 static const AVOption options[] = {
@@ -1527,6 +1551,7 @@ static const AVOption options[] = {
     { "no_metadata", "disable metadata for FLV", 0, AV_OPT_TYPE_CONST, {.i64 = FLV_NO_METADATA}, INT_MIN, INT_MAX, AV_OPT_FLAG_ENCODING_PARAM, .unit = "flvflags" },
     { "no_duration_filesize", "disable duration and filesize zero value metadata for FLV", 0, AV_OPT_TYPE_CONST, {.i64 = FLV_NO_DURATION_FILESIZE}, INT_MIN, INT_MAX, AV_OPT_FLAG_ENCODING_PARAM, .unit = "flvflags" },
     { "add_keyframe_index", "Add keyframe index metadata", 0, AV_OPT_TYPE_CONST, {.i64 = FLV_ADD_KEYFRAME_INDEX}, INT_MIN, INT_MAX, AV_OPT_FLAG_ENCODING_PARAM, .unit = "flvflags" },
+    { "output_name", "Output name, used as a prefix to the audio/video processing stats name", offsetof(FLVContext, output_name), AV_OPT_TYPE_STRING, { 0 }, 0, 0, AV_OPT_FLAG_ENCODING_PARAM, .unit = "flvflags" },
     { NULL },
 };
 
